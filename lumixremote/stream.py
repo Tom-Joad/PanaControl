@@ -120,7 +120,7 @@ class LiveStream:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.recv_buffer)
         except OSError:
             # macOS caps it via kern.ipc.maxsockbuf; not critical.
-            log.debug("SO_RCVBUF could not be set")
+            log.debug("rcvbuf_not_set")
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.5)
 
@@ -129,7 +129,7 @@ class LiveStream:
         self.stats = StreamStats()
         self._thread = threading.Thread(target=self._loop, name="lumix-udp", daemon=True)
         self._thread.start()
-        log.info("UDP receiver listening on port %d", self.port)
+        log.info("udp_listening", extra={"port": self.port})
 
     def stop(self) -> None:
         self._running.clear()
@@ -159,7 +159,7 @@ class LiveStream:
 
             if last_seen is not None and now - last_seen > self.stall_after:
                 self.stats.gaps.append((last_seen, now))
-                log.warning("stream gap of %.1f s", now - last_seen)
+                log.warning("stream_gap", extra={"seconds": round(now - last_seen, 1)})
             last_seen = now
 
             result = extract_jpeg(datagram)

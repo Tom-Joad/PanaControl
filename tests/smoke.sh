@@ -85,8 +85,14 @@ done
 [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] || fail "not healthy"
 in_log 'BASED ON IMAGES FROM LINUXSERVER\.IO' || fail "the start banner is not ours"
 if in_log 'Based on images from linuxserver\.io'; then fail "the base image's banner is still shown"; fi
-in_log '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} INFO +lumixremote.app: PanaControl [0-9]+\.[0-9]+\.[0-9]+ starting' \
-    || fail "no start line with version and time stamp"
+in_log '^\{"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}(Z|[+-][0-9:]{5})","level":"INFO","event":"starting","version":"[0-9]+\.[0-9]+\.[0-9]+"' \
+    || fail "no JSON start line with time stamp and version"
+# Every line the app writes is one JSON object (the banner and s6 lines
+# before it are not the app's).
+APP_LINES=$(docker logs "$NAME" 2>&1 | grep '^{' || true)
+[[ $(head -n1 <<<"$APP_LINES") == *'"event":"starting"'* ]] || fail "the first line of the app is not 'starting'"
+docker exec -i "$NAME" python3 -c 'import json, sys; [json.loads(l) for l in sys.stdin]' <<<"$APP_LINES" \
+    || fail "a log line of the app is not JSON"
 
 PS_OUT=$(docker exec "$NAME" ps -eo user,args)
 USERS=$(awk '/python3 -m lumixremote.app/ && !/awk/ {print $1}' <<<"$PS_OUT")
@@ -124,6 +130,6 @@ echo "== ordered shutdown"
 docker stop -t 30 "$NAME" >/dev/null
 CODE=$(docker inspect -f '{{.State.ExitCode}}' "$NAME")
 [[ $CODE == 0 ]] || fail "exit code $CODE instead of 0"
-in_log 'INFO +lumixremote.app: shutting down' || fail "the app did not shut down in order"
+in_log '"event":"shutting_down"' || fail "the app did not shut down in order"
 
 echo "OK"

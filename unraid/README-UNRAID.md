@@ -157,20 +157,22 @@ camera out.
 docker logs -f PanaControl
 ```
 
-The log starts with the TomJoad Images banner and the user IDs. A good start
-continues like this (every line starts with date, time, level and module,
-shortened here):
+The log starts with the TomJoad Images banner and the user IDs. After that
+the app writes one JSON object per line: time stamp, level, a short event
+name and its details. A good start continues like this (time stamps
+shortened):
 
 ```
-PanaControl 2.0.1 starting
-web interface on http://0.0.0.0:8080
-connected to DC-GH6 (..., firmware 3.01) after 1 attempt(s)
-registered, session up; waiting until the camera is ready to record
-recmode sent, camera was in 'play'
-camera ready to record after 3.7s
-UDP receiver listening on port 49199
-stream requested on UDP 49199
+{"ts":"…","level":"INFO","event":"starting","version":"2.1.0","camera":"192.0.2.10","device_name":"lumix-remote","stream_port":49199,"web":"http://0.0.0.0:8080","log_level":"INFO"}
+{"ts":"…","level":"INFO","event":"connected","model":"DC-GH6","firmware":"3.01","attempts":1}
+{"ts":"…","level":"INFO","event":"registered"}
+{"ts":"…","level":"INFO","event":"recmode_sent","cammode":"play"}
+{"ts":"…","level":"INFO","event":"camera_ready","after_s":3.7}
+{"ts":"…","level":"INFO","event":"udp_listening","port":49199}
+{"ts":"…","level":"INFO","event":"stream_requested","port":49199}
 ```
+
+Before 2.1.0 the same lines were plain text.
 
 The state is also at `http://<address>:8080/api/status`.
 

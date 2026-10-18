@@ -202,10 +202,8 @@ class Camera:
         if not self.info.udn:
             self.describe()
         if not self.info.supports_remote_view:
-            log.warning(
-                "camera reports no CPRemoteView capability (%r), trying anyway",
-                self.info.capabilities,
-            )
+            log.warning("no_remote_view_capability",
+                        extra={"capabilities": self.info.capabilities})
 
         self._get_raw(mode="accctrl", type="req_acc_g")
 
@@ -229,13 +227,13 @@ class Camera:
             # the same place, which could not be told apart otherwise.
             if parts[0] == "ok" and _looks_like_session(session):
                 self.session_id = session
-                log.info(
-                    "connected to %s (%s, firmware %s) after %d attempt(s)",
-                    self.info.model_number,
-                    self.info.friendly_name,
-                    self.info.firmware,
-                    attempts,
-                )
+                # Model and firmware only: the camera's own name may be
+                # personal, and the session ID stays out of the log.
+                log.info("connected", extra={
+                    "model": self.info.model_number,
+                    "firmware": self.info.firmware,
+                    "attempts": attempts,
+                })
                 self._announce_name()
                 return self.session_id
 
@@ -243,7 +241,7 @@ class Camera:
             # the log drowns and the cause can't be seen.
             if last != reported:
                 reported = last
-                log.info("camera not ready yet, reply: %s", last)
+                log.info("registration_pending", extra={"reply": last})
 
             time.sleep(poll_interval)
 
@@ -260,7 +258,7 @@ class Camera:
         try:
             self._get_xml(mode="setsetting", type="device_name", value=self.device_name)
         except LumixError as exc:
-            log.debug("device_name not set: %s", exc)
+            log.debug("device_name_not_set", extra={"error": str(exc)})
 
     def ensure_connected(self) -> None:
         """Register again after the camera was in standby or lost power."""
@@ -268,7 +266,7 @@ class Camera:
             self.get_state()
             return
         except LumixError:
-            log.info("session lost, reconnecting")
+            log.info("session_lost_reconnecting")
         self.session_id = None
         self.describe()
         self.connect()
@@ -366,4 +364,4 @@ class Camera:
         try:
             self._get_xml(mode="stopstream")
         except LumixError as exc:
-            log.debug("stopstream not acknowledged: %s", exc)
+            log.debug("stopstream_not_acknowledged", extra={"error": str(exc)})
