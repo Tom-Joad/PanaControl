@@ -698,7 +698,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await run_in_threadpool(controller.stop)
 
 
-app = FastAPI(title="lumix-remote", lifespan=lifespan)
+class SecurityHeaders:
+    """Headers on every response, the live view included.
+
+    A plain ASGI middleware: Starlette's BaseHTTPMiddleware would get in the
+    way of the endless MJPEG response. No sniffing a reply into HTML, no
+    framing by other pages (a hidden Record button under someone else's
+    page), no paths in the Referer, and nothing cached from /api/.
+    """
+
+    HEADERS = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"content-security-policy", b"frame-ancestors 'none'"),
+        (b"referrer-policy", b"same-origin"),
+    ]
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        api = scope["path"].startswith("/api/")
+
+        async def send_with_headers(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", [])) + self.HEADERS
+                if api:
+                    headers.append((b"cache-control", b"no-store"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+# No generated API pages: the routes are listed in the README.
+app = FastAPI(title="lumix-remote", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(SecurityHeaders)
 # Stylesheets and fonts of the interface. The fonts are served from here, not
 # from a CDN, so no viewer's address goes to a third party.
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

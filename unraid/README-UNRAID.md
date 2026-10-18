@@ -76,7 +76,7 @@ repository is private, so Unraid can't download it. Copy it once into
 Unraid's icon folder instead; Unraid uses a file there before it tries the
 URL (`getIcon` in `DockerClient.php`, Unraid 7):
 
-1. Download [`unraid/icon.png`](../unraid/icon.png) from the repository on GitHub
+1. Download [`unraid/icon.png`](icon.png) from the repository on GitHub
    (logged in) and put it on any share, for example as
    `\\<SERVER>\appdata\PanaControl-icon.png`.
 2. In the Unraid terminal, copy it into the icon folder of the Docker data:
@@ -143,7 +143,7 @@ the stream gaps described above.
 **The container must be stopped in order.** On shutdown the app sends
 `stopstream` and releases the remote session. Without that, the camera
 refuses every further registration until it is switched off and on again;
-this is measured, see `protocol.md`.
+this is measured, see `docs/protocol.md`.
 
 That is why the template sets `--stop-timeout 30`. s6-overlay passes the
 signal straight to the app and gives it 20 seconds
@@ -180,7 +180,7 @@ The state is also at `http://<address>:8080/api/status`.
 |---|---|
 | The container stops right after the start, log says `ERROR: LUMIX_CAMERA_IP is required` | The camera's address is not set |
 | The container doesn't start after the update to 2.0.0 | `--read-only` or `--cap-drop ALL` still in Extra Parameters, see below |
-| The interface says "Connecting" and stays there | Camera not in its waiting state, see `protocol.md` |
+| The interface says "Connecting" and stays there | Camera not in its waiting state, see `docs/protocol.md` |
 | "Camera not in record mode" | It is in playback; the app sends `recmode`, which takes a moment |
 | "No picture" although connected | Camera in another subnet, or bridge with port mapping |
 | Stream gaps of 10 to 40 s | Bridge with port mapping: the fragmented datagrams don't survive the NAT |

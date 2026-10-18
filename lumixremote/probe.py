@@ -46,8 +46,22 @@ def human_bytes(value: float) -> str:
 def run_probe(ip: str, device_name: str, port: int, duration: float,
               restart_on_stall: bool, test_commands: bool,
               outdir: pathlib.Path) -> int:
+    """Run the diagnosis. However it ends (Ctrl+C, a refused command, an
+    error), the session is released: without stopstream the camera stays
+    locked until it is switched off and on."""
     cam = Camera(ip, device_name=device_name)
+    try:
+        return _measure(cam, ip, port, duration, restart_on_stall,
+                        test_commands, outdir)
+    finally:
+        if cam.connected:
+            cam.stop_stream()
+        cam.close()
 
+
+def _measure(cam: Camera, ip: str, port: int, duration: float,
+             restart_on_stall: bool, test_commands: bool,
+             outdir: pathlib.Path) -> int:
     print(f"\n[1/5] Fetching the descriptor from {ip}")
     info = cam.describe()
     print(f"      Model      : {info.model_number} ({info.friendly_name})")
@@ -92,6 +106,16 @@ def run_probe(ip: str, device_name: str, port: int, duration: float,
 
     stream = LiveStream(port=port)
     stream.start()
+    try:
+        return _stream_and_report(cam, stream, port, duration,
+                                  restart_on_stall, outdir)
+    finally:
+        stream.stop()
+
+
+def _stream_and_report(cam: Camera, stream: LiveStream, port: int,
+                       duration: float, restart_on_stall: bool,
+                       outdir: pathlib.Path) -> int:
     time.sleep(0.3)  # receiver surely up before the camera sends
 
     restarts = 0
@@ -101,7 +125,6 @@ def run_probe(ip: str, device_name: str, port: int, duration: float,
     try:
         cam.start_stream(port)
     except LumixError as exc:
-        stream.stop()
         print(f"      startstream refused: {exc}")
         return 1
 
@@ -149,6 +172,8 @@ def run_probe(ip: str, device_name: str, port: int, duration: float,
         cam.stop_stream()
     except LumixError:
         pass
+    # Released; run_probe doesn't send stopstream a second time.
+    cam.session_id = None
 
     # ------------------------------------------------------------------ #
     print("\n[5/5] Results")
@@ -157,7 +182,6 @@ def run_probe(ip: str, device_name: str, port: int, duration: float,
     if s.frames == 0:
         print("      Not a single frame received.")
         print("      Check: firewall, same subnet, port free?")
-        cam.close()
         return 1
 
     outdir.mkdir(parents=True, exist_ok=True)
@@ -186,8 +210,6 @@ def run_probe(ip: str, device_name: str, port: int, duration: float,
     print(f"      Session         : {'LOST' if session_lost else 'stable'}")
     if frame:
         print(f"      Sample frame    : {sample}")
-
-    cam.close()
     return 0
 
 

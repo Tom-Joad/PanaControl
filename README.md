@@ -26,8 +26,8 @@ remote session occupied, and the camera then answers every command with
 
 | Architecture | Available |
 | :---: | :---: |
-| x86-64 | ✅ |
-| arm64 | ❌ |
+| x86-64 | yes |
+| arm64 | no |
 
 Only x86-64 is built: PanaControl runs on an x86-64 server, and no ARM host
 is in use.
@@ -74,7 +74,7 @@ docker run -d \
 
 ### Unraid
 
-A template and its own guide: [`docs/unraid.md`](docs/unraid.md). The
+A template and its own guide: [`unraid/README-UNRAID.md`](unraid/README-UNRAID.md). The
 template runs the container on `br0` with a fixed IP.
 
 ## Parameters
@@ -127,7 +127,7 @@ the usual capabilities, so **remove the 1.x hardening options**:
 `--read-only`, `--cap-drop ALL`, `--cap-add SETUID`, `--cap-add SETGID`
 (compose: `read_only`, `cap_drop`, `cap_add`). Keep `--stop-timeout 30` and
 `--security-opt no-new-privileges`. Settings, ports and the network stay the
-same. On Unraid, see [Upgrading from 1.x to 2.0.0](docs/unraid.md#upgrading-from-1x-to-200).
+same. On Unraid, see [Upgrading from 1.x to 2.0.0](unraid/README-UNRAID.md#upgrading-from-1x-to-200).
 
 ## Native start
 
@@ -170,7 +170,9 @@ header of the live view datagram and shown.
 
 The interface has no login: whoever reaches it controls the camera and sees
 the live view. Keep it on a trusted network, or put a reverse proxy with
-authentication in front. Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
+authentication in front. Commands that a browser sends from another web
+site are refused, so a page open in the same browser can't start or stop a
+recording; scripts such as `curl` still work. Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 
@@ -181,7 +183,7 @@ docker logs -f panacontrol
 The log starts with the TomJoad Images banner and the user IDs; the first
 line of the app names the version (`PanaControl 2.0.1 starting`). The state
 is at `http://<address>:8080/api/status`. More symptoms and causes are in
-[`docs/unraid.md`](docs/unraid.md#when-something-is-stuck).
+[`unraid/README-UNRAID.md`](unraid/README-UNRAID.md#when-something-is-stuck).
 
 Verify the signature:
 
@@ -199,7 +201,8 @@ docker build -t panacontrol:test .
 tests/smoke.sh panacontrol:test
 ```
 
-The smoke test needs no camera. It checks the settings, the switch to
+`python -m pytest` runs the unit tests (`pip install -r
+requirements-dev.txt` first). The smoke test needs no camera. It checks the settings, the switch to
 `PUID:PGID`, `TZ`, the start banner, the interface and that `docker stop`
 ends the app in order. GitHub Actions runs it on every push.
 
@@ -234,7 +237,7 @@ survives a longer pause without commands.
 | `lumixremote/static/` | Interface without a build step, stylesheets and fonts |
 | `lumixremote/probe.py` | Measuring run and results |
 | `docs/protocol.md` | What was verified on the device |
-| `docs/unraid.md` | Running on an Unraid server |
+| `unraid/README-UNRAID.md` | Running on an Unraid server |
 | `unraid/PanaControl.xml` | Container template for Unraid |
 | `root/etc/s6-overlay/` | s6 services: settings check, app as `abc`, start banner |
 | `tests/smoke.sh` | Smoke test of the image |
