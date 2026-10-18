@@ -35,7 +35,7 @@ is in use.
 | Tag | Meaning |
 |---|---|
 | `latest` | The latest release |
-| `2.0.1`, `2.0` | A specific release / the latest patch of a minor version |
+| `2.1.0`, `2.1` | A specific release / the latest patch of a minor version |
 | `sha-<commit>` | A specific build |
 | `dev` | Test build from a branch, made by a manual run; not for regular use |
 
@@ -180,8 +180,10 @@ recording; scripts such as `curl` still work. Reporting vulnerabilities: [SECURI
 docker logs -f panacontrol
 ```
 
-The log starts with the TomJoad Images banner and the user IDs; the first
-line of the app names the version (`PanaControl 2.0.1 starting`). The state
+The log starts with the TomJoad Images banner and the user IDs. The app
+then writes one JSON object per line (`ts`, `level`, `event` and the
+details); the first one is `"event":"starting"` with the version and the
+settings that matter. The state
 is at `http://<address>:8080/api/status`. More symptoms and causes are in
 [`unraid/README-UNRAID.md`](unraid/README-UNRAID.md#when-something-is-stuck).
 

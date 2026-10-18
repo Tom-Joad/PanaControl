@@ -5,7 +5,19 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [2.1.0] - 2026-10-19
+
+### Changed
+- **The log is JSON:** one object per line with `ts` (local time with its
+  offset, per `TZ`), `level`, a short `event` name and its details as
+  fields, instead of plain text. The first line is `starting` with the
+  version and the settings that matter (camera address, device name,
+  ports). uvicorn's own lines come out the same way. The camera's own
+  name is no longer logged, only model and firmware.
+- A bad setting (no camera address, a port that isn't a number) is logged
+  as `config_invalid` with the reason.
+- The base image moved to the newest `baseimage-alpine:3.24` build, and
+  `fastapi` to 0.143.2.
 
 ### Security
 - Every response says `nosniff` and can't be framed by other pages; API
@@ -114,4 +126,5 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[2.1.0]: https://github.com/Tom-Joad/PanaControl/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/Tom-Joad/PanaControl/releases/tag/v2.0.1

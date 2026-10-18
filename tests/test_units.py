@@ -147,3 +147,30 @@ def test_security_headers_and_no_api_pages():
 def test_the_interface_is_served():
     assert "PanaControl" in client.get("/").text
     assert pathlib.Path(appmod.STATIC_DIR, "css", "tokens.css").is_file()
+
+
+# -------------------------------------------------------------- logging ---
+
+def _format(msg: str, exc_info=None, **extra) -> dict:
+    import json
+    import logging
+    from lumixremote.logging_setup import JsonFormatter
+    record = logging.LogRecord("lumixremote.app", logging.INFO, __file__, 1, msg, None, exc_info)
+    record.__dict__.update(extra)
+    return json.loads(JsonFormatter().format(record))
+
+
+def test_log_lines_are_json_with_event_and_fields():
+    line = _format("connected", model="DC-GH6", attempts=1)
+    assert line["level"] == "INFO" and line["event"] == "connected"
+    assert line["model"] == "DC-GH6" and line["attempts"] == 1
+    assert line["ts"][:2] == "20" and "T" in line["ts"]
+
+
+def test_an_exception_adds_only_its_last_line():
+    import sys
+    try:
+        raise ValueError("unreadable descriptor")
+    except ValueError:
+        line = _format("keeper_error", exc_info=sys.exc_info())
+    assert line["error"] == "ValueError: unreadable descriptor"

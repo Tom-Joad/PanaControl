@@ -13,8 +13,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: The image tag or the version from the start line (`PanaControl 2.0.1 starting`).
-      placeholder: "2.0.1"
+      description: The image tag or the version from the start line (the `"event":"starting"` line).
+      placeholder: "2.1.0"
     validations:
       required: true
   - type: input

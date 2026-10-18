@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import __version__
+from . import __version__, logging_setup
 from .camera import Camera, CameraState, LumixError, NotReachable
 from .stream import LiveStream
 
@@ -76,7 +76,9 @@ class Config:
             with path.open("rb") as fh:
                 data = tomllib.load(fh)
         else:
-            log.info("No %s found, using environment variables only", path)
+            # Normal in the container, where the settings come from the
+            # environment; "starting" stays the first line.
+            log.debug("config_file_missing", extra={"path": str(path)})
 
         camera = data.get("camera", {})
         stream = data.get("stream", {})
@@ -289,7 +291,7 @@ class Controller:
             self.camera.session_id = self._stale_session
         try:
             if self.camera.connected:
-                log.info("sending stopstream, releasing the session")
+                log.info("session_releasing")
                 self.camera.stop_stream()
         finally:
             self.stream.stop()
@@ -317,7 +319,7 @@ class Controller:
                 # A bug or an unexpected reply must not end this thread: the
                 # app would stay up without ever reconnecting. The session is
                 # left alone, as with a dropout, so a recording isn't at risk.
-                log.exception("unexpected error in the connection keeper")
+                log.exception("keeper_error")
                 self._stop.wait(self.RETRY_DELAY)
 
     def _endure(self, exc: NotReachable) -> None:
@@ -342,7 +344,7 @@ class Controller:
 
         if self._unreachable_since is None:
             self._unreachable_since = time.monotonic()
-            log.info("camera not answering (%s), keeping the session", exc)
+            log.info("camera_unreachable", extra={"error": str(exc)})
 
         self._stop.wait(self.TICK)
 
@@ -361,7 +363,7 @@ class Controller:
         self.camera.connect()
         self._streaming = False
         self._registered_at = time.monotonic()
-        log.info("registered, session up; waiting until the camera is ready to record")
+        log.info("registered")
 
         # A stream from a lost session keeps running on the camera and makes
         # the next startstream fail with err_busy; the log showed this after
@@ -391,7 +393,7 @@ class Controller:
 
             if state.recording:
                 # The camera is recording; nothing is switched here.
-                log.info("recording in progress, no mode change while settling")
+                log.info("settle_skipped_recording")
                 self._set(cammode=mode, status="online", error="")
                 return
 
@@ -399,7 +401,7 @@ class Controller:
                 if rec_since is None:
                     rec_since = now
                 elif now - rec_since >= self.SETTLE_STABLE:
-                    log.info("camera ready to record after %.1fs", now - started)
+                    log.info("camera_ready", extra={"after_s": round(now - started, 1)})
                     self._set(cammode=mode, status="online", error="")
                     return
             else:
@@ -409,15 +411,14 @@ class Controller:
                     last_recmode = now
                     try:
                         self.camera.set_rec_mode()
-                        log.info("recmode sent, camera was in '%s'", mode)
+                        log.info("recmode_sent", extra={"cammode": mode})
                     except LumixError as exc:
                         # err_critical here only means "already in record mode"
-                        log.info("recmode not accepted: %s", exc)
+                        log.info("recmode_refused", extra={"error": str(exc)})
 
             self._stop.wait(self.SETTLE_POLL)
 
-        log.warning("camera not ready to record after %.0fs, trying anyway",
-                    self.SETTLE_TIMEOUT)
+        log.warning("camera_not_ready", extra={"after_s": self.SETTLE_TIMEOUT})
 
     def _read_capabilities(self) -> None:
         """Fetch the lens limits and the ISO list, once per session each.
@@ -430,7 +431,7 @@ class Controller:
             try:
                 self._lens_anchor = lens_anchor(self.camera.get_info("lens")) or b""
             except LumixError as exc:
-                log.info("lens data not readable: %s", exc)
+                log.info("lens_unreadable", extra={"error": str(exc)})
         if not self._iso_values:
             # allmenu is about 380 KB and doesn't change, so a reconnect
             # doesn't pull it over the WLAN again every time.
@@ -438,9 +439,9 @@ class Controller:
                 values = iso_values_from_menu(self.camera.get_info("allmenu"))
                 if values:
                     self._iso_values = values
-                    log.info("%d ISO values taken from the camera", len(values))
+                    log.info("iso_values", extra={"count": len(values)})
             except LumixError as exc:
-                log.info("menu definition not readable: %s", exc)
+                log.info("menu_unreadable", extra={"error": str(exc)})
 
     def _maintain(self) -> None:
         now = time.monotonic()
@@ -474,8 +475,7 @@ class Controller:
             # less than the footage.
             if not self._kick_suppressed:
                 self._kick_suppressed = True
-                log.warning("stream stalled, but recording is in progress: "
-                            "no startstream, so the recording is not at risk")
+                log.warning("stream_stalled_recording")
             return
 
         self._kick_suppressed = False
@@ -483,7 +483,7 @@ class Controller:
         self._churn = 0
         self._last_restart = now
         self._restarts += 1
-        log.warning("stream stalled, kicking it (#%d)", self._restarts)
+        log.warning("stream_kick", extra={"count": self._restarts})
         try:
             self.camera.start_stream(self.cfg.stream_port)
         except LumixError as exc:
@@ -492,7 +492,7 @@ class Controller:
             # the device: treating it as a loss re-registers and aborts the
             # running recording. Only the getstate keepalive decides whether
             # the session is really gone.
-            log.warning("kick refused (%s), keeping the session", exc)
+            log.warning("stream_kick_refused", extra={"error": str(exc)})
 
     def _recording(self) -> bool:
         """Is the camera recording, according to the last state read?"""
@@ -515,7 +515,7 @@ class Controller:
                 try:
                     self._set(**{name: self.camera.get_setting(name)})
                 except LumixError as exc:
-                    log.debug("%s not readable: %s", name, exc)
+                    log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
             self._set(status="online", error="")
             return
 
@@ -540,10 +540,10 @@ class Controller:
                 # of wasting a whole poll interval.
                 self._last_poll = 0.0
                 self._recmode_error = ""
-                log.info("recmode sent, camera brought back from '%s'", mode)
+                log.info("recmode_sent", extra={"cammode": mode})
             except LumixError as exc:
                 self._recmode_error = _camera_reply(str(exc))
-                log.info("recmode not accepted: %s", exc)
+                log.info("recmode_refused", extra={"error": str(exc)})
 
         reason = f"Camera is in '{mode}' instead of record mode"
         if self._recmode_error == "err_busy":
@@ -565,10 +565,10 @@ class Controller:
         except LumixError as exc:
             # Here too: refused is not lost. The next attempt comes after
             # RESTART_COOLDOWN, the session stays.
-            log.warning("startstream refused (%s), trying again later", exc)
+            log.warning("startstream_refused", extra={"error": str(exc)})
             return
         self._streaming = True
-        log.info("stream requested on UDP %d", self.cfg.stream_port)
+        log.info("stream_requested", extra={"port": self.cfg.stream_port})
 
     def _fail(self, exc: LumixError) -> None:
         """Drop the session so the next pass re-registers from scratch.
@@ -588,13 +588,12 @@ class Controller:
         self._registered_at = 0.0
 
         if self._churn >= self.CHURN_ALARM:
-            log.warning(
-                "session lost for the %d. time within %.0fs. The camera holds "
-                "only one remote session: is a second instance or the LUMIX "
-                "app running against the same camera?",
-                self._churn + 1, held,
-            )
-        log.warning("connection lost: %s", exc)
+            log.warning("session_churn", extra={
+                "count": self._churn + 1, "held_s": round(held),
+                "hint": "the camera holds only one remote session: is a second "
+                        "instance or the LUMIX app running against it?",
+            })
+        log.warning("connection_lost", extra={"error": str(exc)})
         self._stale_session = self.camera.session_id or self._stale_session
         self.camera.session_id = None
         self._streaming = False
@@ -694,7 +693,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         # Runs on Ctrl+C and on SIGTERM from the container too.
-        log.info("shutting down")
+        log.info("shutting_down")
         await run_in_threadpool(controller.stop)
 
 
@@ -859,22 +858,24 @@ def main() -> int:
     import uvicorn
 
     level = os.environ.get("LUMIX_LOG_LEVEL", "INFO").upper()
-    # With a time stamp in local time (TZ in the container), so the log says
-    # when something happened without "docker logs -t".
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    logging_setup.configure(level)
     # httpx logs every single request at INFO. During the registration those
     # are dozens of identical lines that bury the camera's actual reply. Only
     # wanted at DEBUG.
     if level != "DEBUG":
         logging.getLogger("httpx").setLevel(logging.WARNING)
-    log.info("PanaControl %s starting", __version__)
-    cfg = Config.load()
+    try:
+        cfg = Config.load()
+    except SystemExit as exc:
+        log.error("config_invalid", extra={"reason": str(exc)})
+        return 1
     app.state.config = cfg
-    log.info("web interface on http://%s:%d", cfg.web_host, cfg.web_port)
+    # The first line: the version and the settings that matter.
+    log.info("starting", extra={
+        "version": __version__, "camera": cfg.camera_ip,
+        "device_name": cfg.device_name, "stream_port": cfg.stream_port,
+        "web": f"http://{cfg.web_host}:{cfg.web_port}", "log_level": level,
+    })
     # The MJPEG stream never ends by itself. Without a deadline, uvicorn would
     # wait for every watching browser on shutdown, and a SIGKILL after that
     # leaves the camera's remote session occupied.
@@ -883,6 +884,8 @@ def main() -> int:
         host=cfg.web_host,
         port=cfg.web_port,
         log_level="warning",
+        # uvicorn's own lines go through the JSON handler too.
+        log_config=None,
         timeout_graceful_shutdown=3,
     )
     return 0
