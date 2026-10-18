@@ -5,6 +5,27 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Security
+- Every response says `nosniff` and can't be framed by other pages; API
+  replies are never cached. The generated API pages (`/docs`,
+  `/openapi.json`) are gone; the routes are listed in the README.
+
+### Fixed
+- The diagnostic run (`lumixremote.probe`) releases the camera's session
+  however it ends. Stopped with Ctrl+C during the measurement, it used to
+  leave the camera locked until it was switched off and on.
+
+### Changed
+- `docker-compose.yml` uses the published image and names the container
+  `panacontrol`, as the docs do. The service keeps its name, so an
+  existing setup replaces its container.
+
+### Docs
+- The Unraid guide moved to `unraid/README-UNRAID.md`. `SECURITY.md` no
+  longer claims a read-only root file system, which 2.0.0 dropped.
+
 ## [2.0.1] - 2026-10-18
 
 ### Security

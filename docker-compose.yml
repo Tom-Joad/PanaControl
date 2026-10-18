@@ -2,13 +2,14 @@
 # gitignored: the camera's address doesn't belong in the repository.
 
 services:
+  # The service keeps its old name, so an existing setup replaces its
+  # container instead of starting a second one next to it: the camera holds
+  # only one remote session.
   lumix-remote:
-    build: .
-    # Instead of building it yourself, use the published image
-    # (private, run "docker login ghcr.io" first):
-    # image: ghcr.io/tom-joad/panacontrol:latest
-    image: lumix-remote:latest
-    container_name: lumix-remote
+    # The image is private: run "docker login ghcr.io" first. To build it
+    # yourself instead, replace the image line with "build: .".
+    image: ghcr.io/tom-joad/panacontrol:latest
+    container_name: panacontrol
     restart: unless-stopped
 
     environment:
@@ -47,7 +48,7 @@ services:
         max-file: "3"
 
 # The port mapping above runs the UDP frames through Docker's NAT, which can
-# drop the large, fragmented datagrams of the live view (see docs/unraid.md).
+# drop the large, fragmented datagrams of the live view (see unraid/README-UNRAID.md).
 # On a Linux server, prefer one of these instead of the ports section:
 #
 #   - an own address on the LAN through a macvlan or ipvlan network (as br0

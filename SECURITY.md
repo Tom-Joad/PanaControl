@@ -26,9 +26,13 @@ particular interest:
 - a way to leave the camera's remote session occupied from outside, which
   locks the camera until it is switched off and on
 
-The container starts as root only to switch to `PUID:PGID`, runs the app as
-that unprivileged user, and is meant to run with a read-only root file
-system and all capabilities dropped but `SETUID` and `SETGID`.
+Commands sent by a browser from another web site are refused, and the
+interface can't be framed by other pages.
+
+The container starts as root only to switch to `PUID:PGID` and runs the app
+as that unprivileged user, never as root. It runs with
+`no-new-privileges`; since 2.0.0 (linuxserver.io's base image) not with a
+read-only root file system.
 
 ## Supply chain
 
@@ -39,7 +43,8 @@ are pinned and checked with `pip-audit`, and the repository is scanned with
 To verify an image (after `docker login ghcr.io`, the image is private):
 
 ```bash
-cosign verify ghcr.io/tom-joad/panacontrol:latest \
-  --certificate-identity-regexp 'https://github.com/Tom-Joad/PanaControl/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/Tom-Joad/PanaControl/\.github/workflows/build-and-push\.yml@refs/tags/v' \
+  ghcr.io/tom-joad/panacontrol:latest
 ```
