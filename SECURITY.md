@@ -40,7 +40,7 @@ Images are built by GitHub Actions from version tags only. Third-party
 actions are pinned to commit SHAs, the base image to a digest. Dependencies
 are pinned and checked with `pip-audit`, and the repository is scanned with
 `gitleaks`. Images are scanned with Trivy and signed keylessly with cosign.
-To verify an image (after `docker login ghcr.io`, the image is private):
+To verify an image:
 
 ```bash
 cosign verify \

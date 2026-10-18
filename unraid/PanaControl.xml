@@ -9,7 +9,8 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/Tom-Joad/PanaControl</Support>
   <Project>https://github.com/Tom-Joad/PanaControl</Project>
-  <Icon>https://raw.githubusercontent.com/Tom-Joad/PanaControl/main/unraid/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/Tom-Joad/unraid-templates/main/icons/panacontrol.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/Tom-Joad/PanaControl/main/unraid/PanaControl.xml</TemplateURL>
   <Overview>
     Remote control for LUMIX cameras over the cam.cgi protocol: live view in the browser,
     autofocus, start and stop video recording, ISO, and the current aperture as a reading.
