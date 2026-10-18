@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>PanaControl</Name>
+  <Repository>ghcr.io/tom-joad/panacontrol:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>br0</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Tom-Joad/PanaControl</Support>
+  <Project>https://github.com/Tom-Joad/PanaControl</Project>
+  <Icon>https://raw.githubusercontent.com/Tom-Joad/PanaControl/main/unraid/icon.png</Icon>
+  <Overview>
+    Remote control for LUMIX cameras over the cam.cgi protocol: live view in the browser,
+    autofocus, start and stop video recording, ISO, and the current aperture as a reading.
+    Developed against a DC-GH6 with firmware 3.01.
+
+    Give the container its own address on the LAN (network br0, fixed IP). The camera sends
+    the live view by UDP to exactly the address the request came from, so camera and
+    container must be in the same subnet: with a router or a separate VLAN in between, the
+    control works but no picture arrives. Don't use bridge with port mapping: a frame of
+    about 23 KB travels as one UDP datagram in 17 IP fragments, and Docker's NAT drops whole
+    frames when one fragment is lost. Host networking works too.
+
+    The web interface is on port 8080 of the container's address. It has no login: whoever
+    reaches it controls the camera. For access from outside, put a reverse proxy with
+    authentication in front.
+
+    Stopping: --stop-timeout 30 gives the app time to release the camera's remote session.
+    A hard kill locks the camera out until it is switched off and on again.
+
+    Based on linuxserver.io's Alpine image. The app writes no files and runs as PUID:PGID,
+    never as root. Upgrading from 1.x: remove --read-only, --cap-drop ALL and the --cap-add
+    options from Extra Parameters, or the container won't start.
+  </Overview>
+  <Category>MediaApp:Photos Tools:Utilities</Category>
+  <ExtraParams>--stop-timeout 30 --security-opt no-new-privileges</ExtraParams>
+  <PostArgs/>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Config Name="LUMIX_CAMERA_IP" Target="LUMIX_CAMERA_IP" Default="" Mode="" Description="The camera's address on the local network, for example 192.0.2.10" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User the app runs as (99 = nobody). Not 0." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group the app runs as (100 = users). Not 0." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="TZ" Target="TZ" Default="Etc/UTC" Mode="" Description="Time zone for the time stamps in the log, for example Europe/Berlin" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="File mode mask. The app writes no files; kept for consistency with other linuxserver.io images." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="LUMIX_DEVICE_NAME" Target="LUMIX_DEVICE_NAME" Default="lumix-remote" Mode="" Description="Name shown on the camera's display during registration" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="LUMIX_STREAM_PORT" Target="LUMIX_STREAM_PORT" Default="49199" Mode="" Description="UDP port for the live view, on the container's own address" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="LUMIX_WEB_HOST" Target="LUMIX_WEB_HOST" Default="0.0.0.0" Mode="" Description="Where the interface listens inside the container. 0.0.0.0 opens it to the network; it has no login." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="LUMIX_WEB_PORT" Target="LUMIX_WEB_PORT" Default="8080" Mode="" Description="Port of the interface on the container's own address" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="LUMIX_LOG_LEVEL" Target="LUMIX_LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG for troubleshooting" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

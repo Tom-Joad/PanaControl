@@ -1,0 +1,43 @@
+name: Bug report
+description: Something doesn't work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Don't post environment details:** camera IP addresses, subnets,
+        UDNs, serial numbers, session IDs, device or Wi-Fi names, or paths
+        with user names. Use addresses from 192.0.2.0/24 in examples and
+        redact log lines before posting them.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The image tag or the version from the start line (`PanaControl 2.0.1 starting`).
+      placeholder: "2.0.1"
+    validations:
+      required: true
+  - type: input
+    id: camera
+    attributes:
+      label: Camera model and firmware
+      placeholder: "DC-GH6, firmware 3.01"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log lines
+      description: From the start line on, around the problem; `LUMIX_LOG_LEVEL=DEBUG` gives more. Redacted.
+      render: text
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: |
+        Native or container; Docker host (Unraid, Linux, Docker Desktop);
+        network (own IP on br0, host, or bridge with port mapping); camera and server in the same subnet?

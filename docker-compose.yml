@@ -1,0 +1,58 @@
+# Values come from a .env file next to this one (see .env.example). It is
+# gitignored: the camera's address doesn't belong in the repository.
+
+services:
+  lumix-remote:
+    build: .
+    # Instead of building it yourself, use the published image
+    # (private, run "docker login ghcr.io" first):
+    # image: ghcr.io/tom-joad/panacontrol:latest
+    image: lumix-remote:latest
+    container_name: lumix-remote
+    restart: unless-stopped
+
+    environment:
+      # As in every linuxserver.io image: the container starts as root and
+      # runs the app as abc with these IDs. Don't set "user:".
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: ${UMASK:-022}
+      TZ: ${TZ:-Etc/UTC}
+      LUMIX_CAMERA_IP: ${LUMIX_CAMERA_IP:?set the camera's address in .env}
+      LUMIX_DEVICE_NAME: ${LUMIX_DEVICE_NAME:-lumix-remote}
+      LUMIX_STREAM_PORT: ${LUMIX_STREAM_PORT:-49199}
+      LUMIX_WEB_HOST: 0.0.0.0
+      LUMIX_WEB_PORT: 8080
+      LUMIX_LOG_LEVEL: ${LUMIX_LOG_LEVEL:-INFO}
+
+    ports:
+      - "${LUMIX_WEB_BIND:-127.0.0.1}:8080:8080/tcp"
+      # The camera sends the frames to the address startstream came from,
+      # and to exactly the port it was given. Behind NAT that is the host's
+      # address, so the port number must be the same on both sides, or no
+      # picture arrives.
+      - "${LUMIX_STREAM_PORT:-49199}:${LUMIX_STREAM_PORT:-49199}/udp"
+
+    # stopstream takes time. If the process is killed before, the camera's
+    # remote session stays occupied until the camera is power-cycled.
+    stop_grace_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# The port mapping above runs the UDP frames through Docker's NAT, which can
+# drop the large, fragmented datagrams of the live view (see docs/unraid.md).
+# On a Linux server, prefer one of these instead of the ports section:
+#
+#   - an own address on the LAN through a macvlan or ipvlan network (as br0
+#     with a fixed IP on Unraid), or
+#   - network_mode: host
+#
+# Docker Desktop on macOS gains nothing from either: there the host namespace
+# is inside the VM, not on the Mac. Day to day on a Mac, start it natively.

@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PanaControl</title>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<style>
+  /* The live view is the photograph here: an ink ground, square panels with
+     hairlines, tracked caps for every label. Red marks only the record
+     button and the recording state. */
+
+  html, body {
+    height: 100%;
+    overscroll-behavior: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    padding: var(--space-12);
+    padding-bottom: max(var(--space-12), env(safe-area-inset-bottom));
+    background: var(--surface-ink);
+    color: var(--text-on-ink);
+    font: var(--text-body-on-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Bar: name, state, exposure, readings and controls in one row --
+     Everything sits on top so the live view gets all the remaining room.
+     On narrow windows the bar wraps. */
+
+  header {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-12);
+    flex-wrap: wrap;
+  }
+
+  .wordmark {
+    display: flex;
+    align-items: center;
+    padding-right: var(--space-6);
+    color: var(--text-on-ink);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .tracked {
+    font: var(--text-nav);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  /* State: a square mark in a status colour, always with a word. */
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-10);
+    padding: 0 var(--space-14);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+    white-space: nowrap;
+  }
+
+  .mark {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    background: var(--status-neutral);
+  }
+  .mark.online  { background: var(--status-positive); }
+  .mark.connect { background: var(--status-neutral); }
+  .mark.standby { background: var(--status-warning); }
+  .mark.offline { background: var(--status-negative); }
+
+  /* ---- Exposure and readings: label over value ---------------------- */
+
+  .field,
+  .reading {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-4);
+    padding: var(--space-6) var(--space-14);
+    background: var(--surface-ink-raised);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+
+  .field > span,
+  .reading > span {
+    color: var(--text-on-ink-faint);
+    font: var(--text-row-meta);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .value,
+  .field select {
+    font: var(--text-button);
+    font-size: 17px;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-on-ink);
+  }
+
+  .field select {
+    appearance: none;
+    min-width: 5.5em;
+    margin: 0;
+    padding: 0 18px 0 0;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent
+      url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23b2ab9d' stroke-width='1.5' d='M1 1l5 5 5-5'/%3E%3C/svg%3E")
+      no-repeat right center;
+    background-size: 10px;
+    cursor: pointer;
+  }
+  .field select option { color: var(--ink); background: var(--paper-bright); }
+  .field select:disabled { opacity: var(--opacity-disabled); cursor: default; }
+
+  /* The aperture can be read but not set; the dashed border says so. */
+  .field.readonly { border-style: dashed; background: transparent; }
+
+  .readings {
+    display: flex;
+    gap: var(--space-12);
+    margin-left: auto;
+  }
+
+  /* ---- Controls ------------------------------------------------------ */
+
+  .actions {
+    display: flex;
+    gap: var(--space-12);
+  }
+
+  .actions .btn {
+    min-height: 48px;
+    padding: 0 var(--space-22);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+
+  .btn--on-ink {
+    background: var(--surface-ink-raised);
+    color: var(--text-on-ink);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+
+  /* ---- Stage: gets all the remaining room ---------------------------- */
+
+  main {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: var(--pitch);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  /* Recording: the frame carries a red edge, visible from two metres. */
+  main.recording { border: var(--stroke-accent) solid var(--red); }
+
+  #view {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  #view.hidden { visibility: hidden; }
+
+  #rec {
+    position: absolute;
+    top: var(--space-14);
+    left: var(--space-14);
+    display: none;
+    padding: var(--space-6) var(--space-12);
+    background: var(--red);
+    color: var(--action-primary-fg);
+    font: var(--text-button);
+    font-size: 15px;
+    letter-spacing: 0.2em;
+  }
+  main.recording #rec { display: block; }
+
+  /* Plain words instead of a frozen picture. */
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-14);
+    padding: var(--space-24);
+    text-align: center;
+    background: var(--scrim-solid);
+  }
+  #overlay.show { display: flex; }
+  #overlay .title {
+    font: var(--text-tile-title);
+    text-transform: uppercase;
+    color: var(--text-on-ink);
+  }
+  #overlay .hint {
+    max-width: 46ch;
+    color: var(--text-on-ink-muted);
+  }
+  #overlay .detail {
+    max-width: 64ch;
+    color: var(--text-on-ink-faint);
+    font: var(--text-meta);
+    word-break: break-word;
+  }
+
+  /* ---- Message after a refused command ------------------------------ */
+
+  #flash {
+    position: fixed;
+    left: 50%;
+    bottom: var(--space-24);
+    transform: translateX(-50%);
+    display: flex;
+    gap: var(--space-12);
+    max-width: min(90vw, 64ch);
+    padding: var(--space-12) var(--space-18);
+    background: var(--surface-ink-raised);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+    border-top: var(--stroke-accent) solid var(--status-negative);
+    color: var(--text-on-ink);
+    font: var(--text-meta);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-fade) var(--ease-standard);
+  }
+  #flash.show { opacity: 1; }
+  #flash .tracked { color: var(--text-on-ink-faint); }
+
+  /* Narrow window: the controls take their own row and share it. */
+  @media (max-width: 760px) {
+    .readings { margin-left: 0; }
+    .actions { width: 100%; }
+    .actions .btn { flex: 1; padding: 0 var(--space-6); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="wordmark">PanaControl</span>
+
+  <span class="link tracked"><span class="mark connect" id="mark"></span><span id="link">Connecting</span></span>
+
+  <label class="field">
+    <span>ISO</span>
+    <select id="iso" disabled><option>--</option></select>
+  </label>
+  <label class="field readonly">
+    <span>Aperture</span>
+    <!-- The camera offers no call to set it, see docs/protocol.md. -->
+    <output class="value" id="aperture" title="Read only: the camera accepts no aperture value">--</output>
+  </label>
+
+  <div class="readings">
+    <div class="reading"><span>Battery</span><b class="value" id="batt">--</b></div>
+    <div class="reading"><span>Remaining</span><b class="value" id="rest">--</b></div>
+    <div class="reading"><span>fps</span><b class="value" id="fps">--</b></div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn--on-ink" id="af">Autofocus</button>
+    <button class="btn btn--primary" id="start">Record</button>
+    <button class="btn btn--on-ink" id="stop">Stop</button>
+  </div>
+</header>
+
+<main id="stage">
+  <img id="view" alt="Live view">
+  <div id="rec">REC</div>
+  <div id="overlay">
+    <div class="title" id="ov-title">No live view</div>
+    <div class="hint"  id="ov-hint"></div>
+    <div class="detail" id="ov-detail"></div>
+  </div>
+</main>
+
+<div id="flash" role="status"><span class="tracked">Refused</span><span id="flash-text"></span></div>
+
+<script>
+"use strict";
+
+const el = (id) => document.getElementById(id);
+const stage = el("stage");
+const view  = el("view");
+
+let lastStatus = null;
+let flashTimer = null;
+
+/* ---- Live view ----------------------------------------------------- */
+// The MJPEG stream stays open. If it breaks, try again after three seconds
+// instead of leaving a frozen picture.
+
+let streamRetry = null;
+
+function openStream() {
+  clearTimeout(streamRetry);
+  streamRetry = null;
+  view.classList.remove("hidden");
+  view.src = "/stream.mjpg?t=" + Date.now();
+}
+
+view.addEventListener("error", () => {
+  view.classList.add("hidden");
+  if (!streamRetry) streamRetry = setTimeout(openStream, 3000);
+});
+
+/* ---- State poll ---------------------------------------------------- */
+
+const LINK_TEXT = {
+  online:     "Connected",
+  connecting: "Connecting",
+  offline:    "No connection",
+  standby:    "Not ready"
+};
+
+async function poll() {
+  let s;
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    s = await r.json();
+  } catch (err) {
+    render(null, String(err && err.message || err));
+    return;
+  }
+  render(s, "");
+}
+
+function render(s, transportError) {
+  lastStatus = s;
+
+  // Service not reachable: its own error state, above everything else
+  if (!s) {
+    el("mark").className = "mark offline";
+    el("link").textContent = "Control unreachable";
+    el("batt").textContent = "--";
+    el("rest").textContent = "--";
+    el("fps").textContent  = "--";
+    el("iso").disabled = true;
+    el("aperture").textContent = "--";
+    stage.classList.remove("recording");
+    setButtons(false, false);
+    overlay(true, "Control unreachable",
+            "The local service does not answer. Is the process still running?",
+            transportError);
+    return;
+  }
+
+  el("mark").className = "mark " + (
+    s.status === "online"  ? "online"  :
+    s.status === "offline" ? "offline" :
+    s.status === "standby" ? "standby" : "connect");
+
+  el("link").textContent =
+    s.status === "online" && s.model ? "Connected · " + s.model
+                                     : LINK_TEXT[s.status] || s.status;
+
+  renderExposure(s);
+  el("batt").textContent = fmtBatt(s.battery);
+  el("rest").textContent = fmtRemaining(s.video_remaining);
+  el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
+
+  stage.classList.toggle("recording", !!s.recording);
+  setButtons(s.status === "online" && !s.recording, s.status === "online" && s.recording);
+
+  if (s.status === "standby") {
+    // Measured on the device: from playback, the DC-GH6 can't be brought
+    // back by command. So say what to do.
+    overlay(true, "Not in record mode",
+            "The camera is in " + (s.cammode || "?") + ". This can't be changed " +
+            "remotely: press the playback button on the camera or half-press " +
+            "the shutter. The live view then returns by itself.",
+            s.error);
+  } else if (s.status === "offline") {
+    overlay(true, "Connection lost",
+            "The app registers again every five seconds. If it stays like " +
+            "this, switch the camera off and on: it holds only one session.",
+            s.error);
+  } else if (s.status === "connecting") {
+    // A remaining error means this is not the first attempt.
+    overlay(true,
+            s.error ? "Reconnecting" : "Connecting",
+            s.error
+              ? "The last attempt failed. The app keeps trying."
+              : "On first contact the camera asks on its display: confirm there.",
+            s.error);
+  } else if (s.stalled && s.unreachable) {
+    // Network dropout. The session is kept so a running recording doesn't
+    // stop, so don't point at the firewall.
+    overlay(true, "Camera not answering",
+            "The connection is interrupted. The session is kept and a running " +
+            "recording continues; the app doesn't register again, because " +
+            "that would stop it. The picture returns by itself.",
+            s.error);
+  } else if (s.stalled && s.recording) {
+    // While recording, the stream is not kicked on purpose.
+    overlay(true, "Live view interrupted",
+            "The recording continues. The preview isn't arriving, and the app " +
+            "doesn't kick the stream while recording: that could stop the " +
+            "recording.",
+            s.error);
+  } else if (s.stalled) {
+    overlay(true, "No picture",
+            "The control answers, but nothing arrives on UDP " + s.stream_port +
+            ". Usually a firewall or NAT blocks the incoming packets.",
+            s.restarts ? "Stream kicked " + s.restarts + "×" : "");
+  } else {
+    overlay(false);
+  }
+}
+
+/* ---- Exposure ------------------------------------------------------ */
+// The list of values comes from the camera, not from this file. It is only
+// rebuilt when it changed; otherwise the select would close on every poll.
+
+let isoBusy = false;
+let isoBuilt = "";
+
+function renderExposure(s) {
+  const sel = el("iso");
+  const values = s.iso_values || [];
+  const key = values.join(",");
+
+  if (key && key !== isoBuilt) {
+    isoBuilt = key;
+    sel.innerHTML = "";
+    for (const v of values) {
+      const node = document.createElement("option");
+      node.value = v;
+      node.textContent = v === "auto" ? "AUTO" : v;
+      sel.appendChild(node);
+    }
+  }
+  // Don't interfere while a change is in progress
+  if (!isoBusy && s.iso && sel.value !== s.iso) sel.value = s.iso;
+  sel.disabled = isoBusy || s.status !== "online" || !key;
+
+  el("aperture").textContent = s.aperture || "--";
+}
+
+el("iso").addEventListener("change", async (ev) => {
+  const sel = ev.currentTarget;
+  const value = sel.value;
+  isoBusy = true;
+  sel.disabled = true;
+  try {
+    const r = await fetch("/api/iso", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value })
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      flash(body.detail || ("HTTP " + r.status));
+    } else if (body.iso && body.iso !== value) {
+      // The camera snaps to the value allowed in the current mode.
+      flash("The camera chose ISO " + body.iso + " instead of " + value, "Adjusted");
+    }
+  } catch (err) {
+    flash("ISO not set: " + (err && err.message || err));
+  }
+  isoBusy = false;
+  poll();
+});
+
+function setButtons(canStart, canStop) {
+  // Autofocus works in manual focus too; confirmed on the device.
+  el("af").disabled    = !(lastStatus && lastStatus.status === "online");
+  el("start").disabled = !canStart;
+  el("stop").disabled  = !canStop;
+}
+
+function overlay(show, title, hint, detail) {
+  const o = el("overlay");
+  o.classList.toggle("show", !!show);
+  if (!show) return;
+  el("ov-title").textContent  = title || "";
+  el("ov-hint").textContent   = hint || "";
+  el("ov-detail").textContent = detail || "";
+}
+
+function fmtBatt(v) {
+  if (!v || v === "unknown") return "--";
+  return String(v).replace(/_/g, " ");
+}
+
+function fmtRemaining(v) {
+  const n = parseInt(v, 10);
+  if (!isFinite(n) || n <= 0) return "--";
+  const m = Math.floor(n / 60), s = n % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+/* ---- Commands ------------------------------------------------------ */
+
+async function send(path, button) {
+  button.disabled = true;
+  try {
+    const r = await fetch(path, { method: "POST" });
+    if (!r.ok) {
+      let detail = "HTTP " + r.status;
+      try { detail = (await r.json()).detail || detail; } catch (e) { /* keep the status */ }
+      flash(detail);
+    }
+  } catch (err) {
+    flash("Command not delivered: " + (err && err.message || err));
+  }
+  // The state comes from the camera, not from an assumption here.
+  poll();
+}
+
+function flash(message, label) {
+  const f = el("flash");
+  f.querySelector(".tracked").textContent = label || "Refused";
+  el("flash-text").textContent = message;
+  f.classList.add("show");
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => f.classList.remove("show"), 5000);
+}
+
+el("af").addEventListener("click",    (e) => send("/api/af", e.currentTarget));
+el("start").addEventListener("click", (e) => send("/api/rec/start", e.currentTarget));
+// Stopping a recording is deliberate: only a click or tap stops it. A click
+// that a key produced (Space or Enter on the focused button) has detail 0
+// and is ignored.
+el("stop").addEventListener("click", (e) => {
+  if (e.detail === 0) return;
+  send("/api/rec/stop", e.currentTarget);
+});
+
+/* Space starts a recording, F focuses, without looking. No key ever stops a
+   recording, whatever has the focus. */
+document.addEventListener("keydown", (ev) => {
+  if (ev.repeat) return;
+  const recording = !!(lastStatus && lastStatus.recording);
+  if (ev.code === "Space" || ev.key === "Enter") {
+    // Keep Space and Enter from activating a focused button by themselves.
+    if (ev.target.tagName === "BUTTON"
+        || (ev.code === "Space" && ev.target.tagName !== "SELECT")) ev.preventDefault();
+    if (ev.code === "Space" && !recording && ev.target.tagName !== "SELECT"
+        && !el("start").disabled) {
+      el("start").click();
+    }
+  } else if ((ev.key === "f" || ev.key === "F") && ev.target.tagName !== "SELECT") {
+    if (!el("af").disabled) el("af").click();
+  }
+});
+
+/* ---- Run ----------------------------------------------------------- */
+
+setButtons(false, false);
+overlay(true, "Connecting", "", "");
+openStream();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# Checks the settings before the app starts. A failure here stops the
+# container (S6_BEHAVIOUR_IF_STAGE2_FAILS=2) with an ERROR line in the log.
+
+# The app can't start without the camera's address. A mounted config.toml
+# (LUMIX_CONFIG) may provide it instead.
+if [[ -z ${LUMIX_CAMERA_IP} ]] && [[ ! -f ${LUMIX_CONFIG:-/nonexistent} ]]; then
+    echo "ERROR: LUMIX_CAMERA_IP is required: set it to the camera's address" >&2
+    exit 1
+fi
+
+if [[ -z ${LSIO_NON_ROOT_USER} ]]; then
+    PUID=${PUID:-911}
+    PGID=${PGID:-911}
+    if [[ ! ${PUID} =~ ^[0-9]+$ ]] || [[ ! ${PGID} =~ ^[0-9]+$ ]]; then
+        echo "ERROR: PUID and PGID must be numeric, got PUID='${PUID}' PGID='${PGID}'" >&2
+        exit 1
+    fi
+    # The base image would give abc the ID 0, and the app would run as root.
+    if [[ ${PUID} == 0 ]] || [[ ${PGID} == 0 ]]; then
+        echo "ERROR: refusing to run as root: set PUID and PGID to a non-zero ID" >&2
+        exit 1
+    fi
+fi

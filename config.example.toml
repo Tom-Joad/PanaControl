@@ -1,0 +1,16 @@
+# Copy to config.toml and adjust. config.toml is gitignored.
+
+[camera]
+# The camera's address on the local network
+ip = "192.0.2.10"
+# Name as it appears on the camera's display during registration
+device_name = "lumix-remote"
+
+[stream]
+# Local UDP port the camera sends the frames to
+port = 49199
+
+[web]
+# Where the web interface listens
+host = "127.0.0.1"
+port = 8080
