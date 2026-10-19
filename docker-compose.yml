@@ -6,8 +6,7 @@ services:
   # container instead of starting a second one next to it: the camera holds
   # only one remote session.
   lumix-remote:
-    # The image is private: run "docker login ghcr.io" first. To build it
-    # yourself instead, replace the image line with "build: .".
+    # To build it yourself instead, replace the image line with "build: .".
     image: ghcr.io/tom-joad/panacontrol:latest
     container_name: panacontrol
     restart: unless-stopped

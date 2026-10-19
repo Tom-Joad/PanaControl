@@ -1,7 +1,6 @@
 # Running on Unraid
 
-How to run the container on an Unraid server. The image is private, so the
-server needs a login to `ghcr.io` first.
+How to run the container on an Unraid server.
 
 ## Before you start
 
@@ -14,36 +13,21 @@ the control gets through, but no picture.
 camera. For access from outside, put a reverse proxy with authentication in
 front.
 
-## Logging in to the registry
-
-Once, in the Unraid console:
-
-```bash
-docker login ghcr.io
-```
-
-User: the GitHub name; password: a personal access token with the
-`read:packages` scope.
-
 ## Creating the container
 
-The easy way is the template in this repository. Copy it under its own name
-to `/boot/config/plugins/dockerMan/templates-user/`:
-
-```bash
-cp unraid/PanaControl.xml /boot/config/plugins/dockerMan/templates-user/
-```
-
-`PanaControl` then shows up under `Docker` -> `Add Container` in the
-`Template` list. Set:
+The easy way is Community Applications: search for **PanaControl** under
+`Apps` and install it. Without Community Applications, add
+`https://github.com/Tom-Joad/unraid-templates` under `Docker` ->
+`Add Container` -> `Template repositories`, then pick `PanaControl` from
+the `Template` list. Set:
 
 - **Network Type** `br0` (preset) and a **Fixed IP address** in the camera's
   subnet. The interface is then at `http://<that address>:8080/`.
 - **LUMIX_CAMERA_IP**, the camera's address.
 - **TZ**, your time zone. `PUID=99` and `PGID=100` are preset.
 
-The template has no `TemplateURL`: the repository is private and Unraid
-couldn't fetch it. Copy a new template by hand as above.
+The template carries its `TemplateURL`, so Unraid picks up changes to it
+by itself.
 
 When editing the template, keep two quirks of the format, or Unraid shows
 empty fields: **no comment before the root element**, and the `Config`
@@ -68,37 +52,6 @@ docker run -d \
 The image is built on linuxserver.io's Alpine base: it starts as root,
 prepares the `abc` user with `PUID:PGID` and runs the app as that user. The
 app writes no files and needs no path.
-
-## Icon
-
-The template names the icon `unraid/icon.png` of this repository. The
-repository is private, so Unraid can't download it. Copy it once into
-Unraid's icon folder instead; Unraid uses a file there before it tries the
-URL (`getIcon` in `DockerClient.php`, Unraid 7):
-
-1. Download [`unraid/icon.png`](icon.png) from the repository on GitHub
-   (logged in) and put it on any share, for example as
-   `\\<SERVER>\appdata\PanaControl-icon.png`.
-2. In the Unraid terminal, copy it into the icon folder of the Docker data:
-
-   ```sh
-   cp /mnt/user/appdata/PanaControl-icon.png /var/lib/docker/unraid/images/PanaControl-icon.png
-   ```
-
-   The part before `-icon.png` is the container's name in Unraid, with the
-   same capitals; use that name if you named the container differently.
-3. Unraid keeps the placeholder it has already picked for the container
-   until the next reboot. To show the icon at once, drop that entry from its
-   cache, then reload the Docker tab:
-
-   ```sh
-   php -r '$f="/usr/local/emhttp/state/plugins/dynamix.docker.manager/docker.json"; $j=json_decode(file_get_contents($f),true); unset($j["PanaControl"]["icon"]); file_put_contents($f,json_encode($j,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));'
-   ```
-
-The copy survives reboots and container updates. It lives in the Docker
-data, not on the flash drive, so it is gone when the Docker image or
-directory is recreated; copy it again then. Unraid does not read icons from
-`/boot/config/plugins/dockerMan/images/`.
 
 ## Settings
 
@@ -198,8 +151,6 @@ cosign verify \
   --certificate-identity-regexp '^https://github.com/Tom-Joad/PanaControl/\.github/workflows/build-and-push\.yml@refs/tags/v' \
   ghcr.io/tom-joad/panacontrol:latest
 ```
-
-The image is private, so `docker login ghcr.io` must have run first.
 
 ## Upgrading from 1.x to 2.0.0
 

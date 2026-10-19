@@ -40,9 +40,8 @@ is in use.
 | `dev` | Test build from a branch, made by a manual run; not for regular use |
 
 Images are built by GitHub Actions for every version tag, published to
-`ghcr.io` and signed keylessly with Sigstore. The image inherits the
-repository's visibility, so it is private: pulling it needs a token with
-`read:packages` (`docker login ghcr.io`).
+`ghcr.io` and signed keylessly with Sigstore. They are public: no login
+is needed to pull them.
 
 ## Usage
 
@@ -74,8 +73,9 @@ docker run -d \
 
 ### Unraid
 
-A template and its own guide: [`unraid/README-UNRAID.md`](unraid/README-UNRAID.md). The
-template runs the container on `br0` with a fixed IP.
+Install **PanaControl** from Community Applications; the guide is
+[`unraid/README-UNRAID.md`](unraid/README-UNRAID.md). The template runs the
+container on `br0` with a fixed IP.
 
 ## Parameters
 

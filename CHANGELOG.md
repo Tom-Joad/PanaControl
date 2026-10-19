@@ -5,6 +5,13 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Docs
+- PanaControl is public: the image needs no `docker login`, the Unraid
+  template is in Community Applications and updates itself through its
+  `TemplateURL`, and the icon comes from there instead of a manual copy.
+
 ## [2.1.0] - 2026-10-19
 
 ### Changed
