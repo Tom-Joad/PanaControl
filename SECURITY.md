@@ -25,6 +25,8 @@ particular interest:
   responses or logs where they don't belong
 - a way to leave the camera's remote session occupied from outside, which
   locks the camera until it is switched off and on
+- a way for a web page to reach the interface despite the cross-site check
+  and the host name check (`LUMIX_ALLOWED_HOSTS`)
 
 Commands sent by a browser from another web site are refused, and the
 interface can't be framed by other pages.

@@ -6,13 +6,14 @@ docs/protocol.md."""
 from __future__ import annotations
 
 import pathlib
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from lumixremote import app as appmod
 from lumixremote.camera import _hexencode, _looks_like_session
-from lumixremote.stream import StreamStats, extract_jpeg, jpeg_dimensions
+from lumixremote.stream import LiveStream, StreamStats, extract_jpeg, jpeg_dimensions
 
 
 # --------------------------------------------------------------- camera ---
@@ -174,3 +175,47 @@ def test_an_exception_adds_only_its_last_line():
     except ValueError:
         line = _format("keeper_error", exc_info=sys.exc_info())
     assert line["error"] == "ValueError: unreadable descriptor"
+
+
+# ----------------------------------------------------------- host names ---
+
+@pytest.mark.parametrize("host", ["attacker.example", "attacker.example:8080", "192.0.2.10.nip.io"])
+def test_foreign_host_names_are_refused(host):
+    # DNS rebinding: same-origin as far as the browser knows, but not a name of ours.
+    assert client.get("/api/status", headers={"Host": host}).status_code == 403
+    assert client.post("/api/rec/start", headers={"Host": host, "Sec-Fetch-Site": "same-origin"}).status_code == 403
+
+
+@pytest.mark.parametrize("host", ["192.0.2.10:8080", "[2001:db8::1]:8080", "tower:8080", "tower.local", "localhost"])
+def test_lan_host_names_pass(host):
+    assert client.get("/", headers={"Host": host}).status_code == 200
+
+
+def test_allowed_hosts_come_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMIX_CAMERA_IP", "192.0.2.10")
+    monkeypatch.setenv("LUMIX_ALLOWED_HOSTS", "Cam.Example.com, other.example.com")
+    cfg = appmod.Config.load(tmp_path / "missing.toml")
+    assert cfg.allowed_hosts == ("cam.example.com", "other.example.com")
+    assert appmod.host_allowed("cam.example.com:443", cfg.allowed_hosts)
+    assert not appmod.host_allowed("third.example.com", cfg.allowed_hosts)
+
+
+# ------------------------------------------------------------- receiver ---
+
+def test_frames_from_another_sender_are_dropped():
+    import socket as so
+
+    stream = LiveStream(port=0, source="192.0.2.10")
+    stream.start()
+    try:
+        port = stream._sock.getsockname()[1]
+        with so.socket(so.AF_INET, so.SOCK_DGRAM) as sender:
+            sender.sendto(b"HDR" + b"\xff\xd8\xff" + b"fake" + b"\xff\xd9", ("127.0.0.1", port))
+        deadline = time.monotonic() + 2
+        while stream.stats.foreign == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        stream.stop()
+    assert stream.stats.foreign == 1
+    assert stream.stats.frames == 0
+    assert stream.latest_frame is None

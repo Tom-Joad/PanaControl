@@ -16,6 +16,7 @@ Start:
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import logging
 import os
 import pathlib
@@ -67,6 +68,8 @@ class Config:
     stream_port: int = 49199
     web_host: str = "127.0.0.1"
     web_port: int = 8080
+    # Host names besides the ones that can't be taken over (see host_allowed).
+    allowed_hosts: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, path: pathlib.Path | None = None) -> "Config":
@@ -102,6 +105,12 @@ class Config:
             stream_port=port("LUMIX_STREAM_PORT", stream.get("port", 49199)),
             web_host=os.environ.get("LUMIX_WEB_HOST", web.get("host", "127.0.0.1")),
             web_port=port("LUMIX_WEB_PORT", web.get("port", 8080)),
+            allowed_hosts=tuple(
+                h.strip().lower().rstrip(".")
+                for h in (os.environ["LUMIX_ALLOWED_HOSTS"].split(",") if "LUMIX_ALLOWED_HOSTS" in os.environ
+                          else web.get("allowed_hosts", []))
+                if h.strip()
+            ),
         )
         if not cfg.camera_ip:
             raise SystemExit(
@@ -239,7 +248,7 @@ class Controller:
         self.cfg = cfg
         self.camera = Camera(cfg.camera_ip, device_name=cfg.device_name,
                              timeout=CAMERA_TIMEOUT)
-        self.stream = LiveStream(port=cfg.stream_port)
+        self.stream = LiveStream(port=cfg.stream_port, source=cfg.camera_ip)
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -697,6 +706,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await run_in_threadpool(controller.stop)
 
 
+# Names a web site can't point at this app. With DNS rebinding, a page whose
+# own name was made to resolve to the app's address counts as same-origin:
+# it passes the cross-site check, reads /api/status and the live view, and
+# starts a recording. IP addresses, localhost, single labels such as "tower"
+# and these suffixes can't be registered on the internet; any other name
+# (a reverse proxy) is listed in LUMIX_ALLOWED_HOSTS.
+LOCAL_SUFFIXES = (".local", ".lan", ".home.arpa", ".internal")
+
+
+def host_name(host: str) -> str:
+    """The name part of a Host header, without port and brackets."""
+    host = host.strip().lower()
+    if host.startswith("["):
+        return host[1:host.find("]")] if "]" in host else host[1:]
+    if host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    return host.rstrip(".")
+
+
+def host_allowed(host: str, extra: tuple[str, ...] = ()) -> bool:
+    name = host_name(host)
+    if not name:
+        # No Host header: an HTTP/1.0 script, never a browser.
+        return True
+    if name in extra or name == "localhost" or "." not in name or name.endswith(LOCAL_SUFFIXES):
+        return True
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
 class SecurityHeaders:
     """Headers on every response, the live view included.
 
@@ -718,6 +760,14 @@ class SecurityHeaders:
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
+            return
+        host = dict(scope.get("headers") or []).get(b"host", b"").decode("latin-1")
+        cfg = getattr(scope["app"].state, "config", None) if "app" in scope else None
+        if not host_allowed(host, cfg.allowed_hosts if cfg else ()):
+            await send({"type": "http.response.start", "status": 403,
+                        "headers": [(b"content-type", b"text/plain; charset=utf-8"), *self.HEADERS]})
+            await send({"type": "http.response.body",
+                        "body": b"unknown host name: add it to LUMIX_ALLOWED_HOSTS\n"})
             return
         api = scope["path"].startswith("/api/")
 

@@ -47,5 +47,6 @@
   <Config Name="LUMIX_STREAM_PORT" Target="LUMIX_STREAM_PORT" Default="49199" Mode="" Description="UDP port for the live view, on the container's own address" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="LUMIX_WEB_HOST" Target="LUMIX_WEB_HOST" Default="0.0.0.0" Mode="" Description="Where the interface listens inside the container. 0.0.0.0 opens it to the network; it has no login." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="LUMIX_WEB_PORT" Target="LUMIX_WEB_PORT" Default="8080" Mode="" Description="Port of the interface on the container's own address" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="LUMIX_ALLOWED_HOSTS" Target="LUMIX_ALLOWED_HOSTS" Default="" Mode="" Description="Host names the interface answers to besides IP addresses, single words (tower) and *.local, e.g. a reverse proxy name; comma-separated" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="LUMIX_LOG_LEVEL" Target="LUMIX_LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG for troubleshooting" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 </Container>

@@ -14,3 +14,5 @@ port = 49199
 # Where the web interface listens
 host = "127.0.0.1"
 port = 8080
+# Host names besides IP addresses, single words and *.local, e.g. a reverse proxy's
+allowed_hosts = []
