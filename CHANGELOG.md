@@ -5,7 +5,26 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.0.0] - 2026-10-20
+
+**Needs action when upgrading** if you open the interface under a host name
+other than an IP address, a single word (`tower`) or a `.local`, `.lan`,
+`.home.arpa` or `.internal` name: add it to `LUMIX_ALLOWED_HOSTS`.
+
+### Security
+- **The interface only answers to host names a web site can't take over.**
+  A page whose own name was made to point at the app (DNS rebinding) counted
+  as the interface itself: it passed the cross-site check, could read the
+  status and the live view and start or stop a recording. Other names now
+  get `403`; `LUMIX_ALLOWED_HOSTS` (or `allowed_hosts` in `config.toml`)
+  adds names, e.g. for a reverse proxy.
+- **The live view only takes frames from the camera's address.** Anyone on
+  the network could send a JPEG to the stream port and have it shown as the
+  live view, with a made-up aperture.
+
+### Fixed
+- The list of stream gaps keeps the last 100; it grew for as long as the app
+  ran.
 
 ### Docs
 - PanaControl is public: the image needs no `docker login`, the Unraid
@@ -133,5 +152,6 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.0.0]: https://github.com/Tom-Joad/PanaControl/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/Tom-Joad/PanaControl/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/Tom-Joad/PanaControl/releases/tag/v2.0.1

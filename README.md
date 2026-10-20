@@ -94,6 +94,7 @@ container on `br0` with a fixed IP.
 | `-e LUMIX_WEB_HOST` | `0.0.0.0` in the image | Where the interface listens |
 | `-e LUMIX_WEB_PORT` | `8080` | Port of the interface |
 | `-e LUMIX_LOG_LEVEL` | `INFO` | `DEBUG` for troubleshooting |
+| `-e LUMIX_ALLOWED_HOSTS` | -- | Further host names for the interface, comma-separated (e.g. behind a reverse proxy); see [Security](#security) |
 | `--stop-timeout 30` | -- | Time for the ordered shutdown, see above |
 
 In the container the configuration comes from environment variables, so no
@@ -118,6 +119,13 @@ port mapping, the UDP port needs the same number on both sides.
 Docker Desktop on macOS runs the host namespace in a VM: the published UDP
 port works there, `network_mode: host` doesn't. Day to day on a Mac, start
 it natively.
+
+## Upgrading from 2.x
+
+3.0.0 only answers to the host names listed under [Security](#security). If
+you open the interface by IP address (the Unraid default), as `tower` or as a
+`.local` name, nothing changes. If you use another name, for example through
+a reverse proxy, add it to `LUMIX_ALLOWED_HOSTS` before updating.
 
 ## Upgrading from 1.x
 
@@ -172,7 +180,20 @@ The interface has no login: whoever reaches it controls the camera and sees
 the live view. Keep it on a trusted network, or put a reverse proxy with
 authentication in front. Commands that a browser sends from another web
 site are refused, so a page open in the same browser can't start or stop a
-recording; scripts such as `curl` still work. Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
+recording; scripts such as `curl` still work.
+
+The interface also only answers to host names a web site can't take over:
+IP addresses, `localhost`, single words such as `tower`, and names ending in
+`.local`, `.lan`, `.home.arpa` or `.internal`. Without this, a page whose own
+name was made to point at the app (DNS rebinding) would count as the
+interface itself and could watch the live view and start a recording. Any
+other name, e.g. a reverse proxy's, goes into `LUMIX_ALLOWED_HOSTS` (or
+`allowed_hosts = [...]` under `[web]` in `config.toml`); others get `403`.
+
+The live view only takes frames from the camera's address; datagrams from
+anyone else on the network are dropped.
+
+Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 

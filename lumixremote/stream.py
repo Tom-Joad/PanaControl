@@ -11,7 +11,7 @@ import logging
 import socket
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -71,7 +71,11 @@ class StreamStats:
     frame_bytes: int = 0
     dimensions: Counter = field(default_factory=Counter)
     truncated: int = 0
-    gaps: list[tuple[float, float]] = field(default_factory=list)
+    # Datagrams from an address other than the camera's, dropped.
+    foreign: int = 0
+    # The latest gaps only, and a count of all: the receiver runs for days.
+    gaps: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=100))
+    gap_count: int = 0
 
     @property
     def elapsed(self) -> float:
@@ -93,8 +97,13 @@ class LiveStream:
     """Listens on UDP and always holds the most recently received frame."""
 
     def __init__(self, port: int = 49199, stall_after: float = 2.0,
-                 recv_buffer: int = 4 * 1024 * 1024):
+                 recv_buffer: int = 4 * 1024 * 1024, source: str | None = None):
         self.port = port
+        # Only datagrams from this address count. Anyone on the LAN can send
+        # to the port; without the check a stranger's JPEG became the live
+        # view, and its header the aperture shown.
+        self.source = source
+        self._source_ip: str | None = None
         self.stall_after = stall_after
         self.recv_buffer = recv_buffer
         self.stats = StreamStats()
@@ -123,6 +132,14 @@ class LiveStream:
             log.debug("rcvbuf_not_set")
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.5)
+        # Resolved at every start: a camera address given as a name may
+        # change between sessions.
+        self._source_ip = None
+        if self.source:
+            try:
+                self._source_ip = socket.gethostbyname(self.source)
+            except OSError:
+                log.warning("stream_source_unresolved", extra={"port": self.port})
 
         self._sock = sock
         self._running.set()
@@ -147,11 +164,16 @@ class LiveStream:
 
         while self._running.is_set():
             try:
-                datagram, _addr = self._sock.recvfrom(MAX_DATAGRAM)
+                datagram, addr = self._sock.recvfrom(MAX_DATAGRAM)
             except socket.timeout:
                 continue
             except OSError:
                 break
+            if self._source_ip is not None and addr[0] != self._source_ip:
+                self.stats.foreign += 1
+                if self.stats.foreign == 1:
+                    log.warning("stream_foreign_sender", extra={"port": self.port})
+                continue
 
             now = time.monotonic()
             self.stats.datagrams += 1
@@ -159,6 +181,7 @@ class LiveStream:
 
             if last_seen is not None and now - last_seen > self.stall_after:
                 self.stats.gaps.append((last_seen, now))
+                self.stats.gap_count += 1
                 log.warning("stream_gap", extra={"seconds": round(now - last_seen, 1)})
             last_seen = now
 

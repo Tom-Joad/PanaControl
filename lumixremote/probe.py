@@ -104,7 +104,7 @@ def _measure(cam: Camera, ip: str, port: int, duration: float,
     print("      (On the first start the firewall asks about incoming")
     print("       connections for Python: allow them, or nothing arrives.)")
 
-    stream = LiveStream(port=port)
+    stream = LiveStream(port=port, source=cam.ip)
     stream.start()
     try:
         return _stream_and_report(cam, stream, port, duration,
@@ -204,7 +204,7 @@ def _stream_and_report(cam: Camera, stream: LiveStream, port: int,
     print(f"      {'-> constant' if len(offsets) == 1 else '-> VARIABLE, search dynamically'}")
     print(f"      Without SOI     : {s.malformed}")
     print(f"      Truncated       : {s.truncated}")
-    print(f"      Gaps > 2 s      : {len(s.gaps)}")
+    print(f"      Gaps > 2 s      : {s.gap_count}")
     print(f"      Kicked          : {restarts}")
     print(f"      Keepalives ok   : {keepalives}")
     print(f"      Session         : {'LOST' if session_lost else 'stable'}")

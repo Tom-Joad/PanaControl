@@ -123,6 +123,12 @@ echo "== commands from other web sites are refused"
 [[ $(post /api/iso 'not json' 'Sec-Fetch-Site:same-origin') == 400 ]] || fail "a broken ISO body is not a 400"
 [[ $(post /api/iso '[1]' 'Sec-Fetch-Site:same-origin') == 400 ]] || fail "an ISO list body is not a 400"
 
+echo "== foreign host names are refused (DNS rebinding)"
+[[ $(post /api/af '' 'Host:attacker.example:8080' 'Sec-Fetch-Site:same-origin') == 403 ]] \
+    || fail "a command under a foreign host name was not refused"
+[[ $(post /api/af '' 'Host:tower:8080' 'Sec-Fetch-Site:same-origin') == 409 ]] \
+    || fail "a command under a LAN host name was refused"
+
 echo "== ordered shutdown"
 # SIGTERM must reach the Python process: only then its lifespan handler runs
 # and sends stopstream. Without it, s6 kills the app after
