@@ -5,6 +5,12 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [3.0.1] - 2026-10-22
+
+### Security
+- Security updates of the distribution packages, picked up by rebuilding the image:
+  - `musl` 1.2.6-r3 (CVE-2026-107891)
+
 ## [3.0.0] - 2026-10-20
 
 **Needs action when upgrading** if you open the interface under a host name
@@ -152,6 +158,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.0.1]: https://github.com/Tom-Joad/PanaControl/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/Tom-Joad/PanaControl/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/Tom-Joad/PanaControl/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/Tom-Joad/PanaControl/releases/tag/v2.0.1
