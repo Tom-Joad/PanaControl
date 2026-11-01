@@ -5,18 +5,23 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.1.0] - 2026-11-01
 
 ### Added
-- **A recording cut short by the camera's WLAN is started again.** The
-  camera at times leaves the network for a minute or two and then refuses the
+- **A recording cut short by a camera outage is started again.** The
+  camera at times stops answering for a minute or two and then refuses the
   old session; registering again is the only way back, and it ends the
   running recording. If a recording ends within 90 seconds after such a
-  registration, the app switches the camera back to record mode and starts
-  it again (up to three tries). The footage continues in a new file after a
-  gap of about 20 seconds; the log says `recording_resumed`. A recording
-  stopped in the app, or one that ends later (stopped on the camera, card
-  full, battery), stays stopped.
+  registration, the app waits for the camera's own switch into playback,
+  switches it back to record mode and starts the recording again (up to
+  three tries). The footage continues in a new file; the log says
+  `recording_resumed`. A recording stopped in the app, or one that ends
+  later (stopped on the camera, card full, battery), stays stopped.
+
+### Changed
+- Updated dependencies:
+  - fastapi from 0.161.0 to 0.162.0
+  - linuxserver/baseimage-alpine from `52106d1` to `d07ad0e`
 
 ## [3.0.4] - 2026-10-28
 
@@ -196,6 +201,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.1.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.0.4...v3.1.0
 [3.0.4]: https://github.com/Tom-Joad/PanaControl/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/Tom-Joad/PanaControl/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/Tom-Joad/PanaControl/compare/v3.0.1...v3.0.2
