@@ -5,6 +5,19 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Added
+- **A recording cut short by the camera's WLAN is started again.** The
+  camera at times leaves the network for a minute or two and then refuses the
+  old session; registering again is the only way back, and it ends the
+  running recording. If a recording ends within 90 seconds after such a
+  registration, the app switches the camera back to record mode and starts
+  it again (up to three tries). The footage continues in a new file after a
+  gap of about 20 seconds; the log says `recording_resumed`. A recording
+  stopped in the app, or one that ends later (stopped on the camera, card
+  full, battery), stays stopped.
+
 ## [3.0.4] - 2026-10-28
 
 ### Security

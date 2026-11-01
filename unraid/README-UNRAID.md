@@ -139,6 +139,7 @@ The state is also at `http://<address>:8080/api/status`.
 | "Camera not in record mode" | It is in playback; the app sends `recmode`, which takes a moment |
 | "No picture" although connected | Camera in another subnet, or bridge with port mapping |
 | Stream gaps of 10 to 40 s | Bridge with port mapping: the fragmented datagrams don't survive the NAT |
+| `recording_resumed` in the log, the footage split into two files | The camera left the WLAN and refused the old session; the new registration ended the recording and the app started it again. Check the camera's WLAN (signal, DHCP lease, band steering) |
 | Every registration is refused | Orphaned session after a hard kill. Switch the camera off and on. |
 
 ## Verifying the signature

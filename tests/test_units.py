@@ -219,3 +219,96 @@ def test_frames_from_another_sender_are_dropped():
     assert stream.stats.foreign == 1
     assert stream.stats.frames == 0
     assert stream.latest_frame is None
+
+
+# ------------------------------------------------------- resume recording ---
+
+class FakeCamera:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def rec_start(self):
+        self.calls.append("rec_start")
+
+    def rec_stop(self):
+        self.calls.append("rec_stop")
+
+
+@pytest.fixture
+def keeper(monkeypatch):
+    """A controller at second 1000, registered just now, with a fake camera."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(appmod.time, "monotonic", lambda: clock["now"])
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    controller.camera = FakeCamera()
+    controller._connected_at = clock["now"]
+
+    def poll(after: float, recording: bool, mode: str = "rec") -> list[str]:
+        clock["now"] += after
+        controller._follow_recording(recording, mode)
+        return controller.camera.calls
+
+    return controller, poll
+
+
+def test_a_recording_ended_by_the_registration_is_started_again(keeper):
+    # The course from the device log: still recording right after the
+    # registration, off five seconds later, then playback, recmode, record.
+    _, poll = keeper
+    poll(0.5, recording=True)
+    assert poll(5, recording=False) == []
+    assert poll(5, recording=False, mode="play") == []
+    assert poll(1, recording=False) == []
+    assert poll(5, recording=False) == ["rec_start"]
+
+
+def test_a_recording_ending_later_stays_stopped(keeper):
+    controller, poll = keeper
+    poll(0.5, recording=True)
+    poll(600, recording=False)
+    assert poll(5, recording=False) == []
+    assert controller._rec_wanted is False
+
+
+def test_the_start_waits_for_the_drop_into_playback(keeper):
+    # 17:38 on the device: off with 'rec' still reported, a start a few
+    # seconds later was refused with err_critical, then came 'play'.
+    _, poll = keeper
+    poll(0.5, recording=True)
+    poll(5, recording=False)
+    assert poll(5, recording=False) == []
+    poll(1, recording=False, mode="play")
+    poll(1, recording=False)
+    assert poll(5, recording=False) == ["rec_start"]
+
+
+def test_without_a_drop_the_start_comes_later(keeper):
+    _, poll = keeper
+    poll(0.5, recording=True)
+    poll(5, recording=False)
+    for _ in range(3):
+        assert poll(5, recording=False) == []
+    assert poll(5, recording=False) == ["rec_start"]
+
+
+def test_a_stop_through_the_app_is_not_undone(keeper):
+    controller, poll = keeper
+    poll(0.5, recording=True)
+    controller.rec_stop()
+    poll(5, recording=False)
+    assert poll(5, recording=False) == ["rec_stop"]
+
+
+def test_nothing_is_started_that_was_not_recording(keeper):
+    _, poll = keeper
+    poll(0.5, recording=False)
+    assert poll(5, recording=False) == []
+
+
+def test_resuming_gives_up_after_a_few_tries(keeper):
+    _, poll = keeper
+    poll(0.5, recording=True)
+    poll(5, recording=False, mode="play")
+    for _ in range(10):
+        poll(5, recording=False)
+    assert poll(5, recording=False) == ["rec_start"] * appmod.Controller.RESUME_TRIES
