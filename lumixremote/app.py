@@ -243,6 +243,16 @@ class Controller:
     SETTLE_TIMEOUT = 40.0   # after this, try anyway
     SETTLE_RETRY = 8.0      # gap between two recmode attempts
 
+    # Recording after a lost session. The camera at times leaves the WLAN for
+    # a minute or two and then refuses the old session; registering again is
+    # the only way back, and it ends the running recording. Seen on the
+    # device: 'rec' was still 'on' right after the registration and 'off' a
+    # few seconds later, with the camera in playback. A recording that ends
+    # this soon after a registration was ended by it and is started again;
+    # one that ends later was stopped on purpose (on the camera, card full,
+    # battery) and stays stopped.
+    RESUME_WINDOW = 90.0
+    RESUME_TRIES = 3        # per registration
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -268,6 +278,14 @@ class Controller:
         self._registered_at = 0.0
         self._churn = 0
         self._unreachable_since: float | None = None
+        # Whether a recording should be running: set by a start through the
+        # app or a recording seen on the camera, cleared by a stop through
+        # the app or a recording that ended while the session held.
+        self._rec_wanted = False
+        self._rec_mode_since: float | None = None
+        self._rec_off_since: float | None = None
+        self._connected_at = 0.0
+        self._resumes = 0
         self._iso = ""
         self._focusmode = ""
         self._iso_values: list[str] = []
@@ -372,6 +390,9 @@ class Controller:
         self.camera.connect()
         self._streaming = False
         self._registered_at = time.monotonic()
+        self._connected_at = self._registered_at
+        self._rec_mode_since = None
+        self._resumes = 0
         log.info("registered")
 
         # A stream from a lost session keeps running on the camera and makes
@@ -516,6 +537,7 @@ class Controller:
         # If a firmware reports no cammode, assume it is ready to record.
         mode = state.raw.get("cammode", "rec")
         self._set(state=state, cammode=mode)
+        self._follow_recording(state.recording, mode)
 
         if mode == "rec":
             self._recmode_tried = False
@@ -563,6 +585,59 @@ class Controller:
         elif self._recmode_error:
             reason += f". Mode change refused: {self._recmode_error}"
         self._set(status="standby", error=reason)
+
+    def _follow_recording(self, recording: bool, mode: str) -> None:
+        """Start a recording again that a re-registration has ended."""
+        now = time.monotonic()
+        if mode != "rec":
+            self._rec_mode_since = None
+        elif self._rec_mode_since is None:
+            self._rec_mode_since = now
+
+        if recording:
+            self._rec_wanted = True
+            self._rec_off_since = None
+            return
+        if not self._rec_wanted:
+            return
+        if self._rec_off_since is None:
+            self._rec_off_since = now
+
+        since_connect = now - self._connected_at
+        if not self._connected_at or since_connect > self.RESUME_WINDOW:
+            self._rec_wanted = False
+            self._rec_off_since = None
+            log.info("recording_ended")
+            return
+
+        # recmode is sent by _read_state. 'rec' has to hold for a moment after
+        # the recording ended: seen on the device, the camera only dropped
+        # into playback several seconds later, which would end a recording
+        # started right away.
+        if self._resumes >= self.RESUME_TRIES or mode != "rec":
+            return
+        steady_since = max(self._rec_mode_since, self._rec_off_since)
+        if now - steady_since < self.SETTLE_STABLE:
+            return
+        self._resumes += 1
+        try:
+            self.camera.rec_start()
+        except LumixError as exc:
+            log.warning("recording_resume_refused", extra={
+                "attempt": self._resumes, "error": str(exc)})
+            return
+        log.warning("recording_resumed", extra={
+            "attempt": self._resumes, "after_s": round(since_connect, 1)})
+
+    def rec_start(self) -> None:
+        self.camera.rec_start()
+        self._rec_wanted = True
+
+    def rec_stop(self) -> None:
+        # Cleared first: a state poll between the stop and its reply must not
+        # take the ended recording for one to resume.
+        self._rec_wanted = False
+        self.camera.rec_stop()
 
     def _begin_stream(self) -> None:
         # The receiver must listen before the camera starts sending.
@@ -845,12 +920,12 @@ async def autofocus(request: Request) -> dict:
 
 @app.post("/api/rec/start", **COMMAND)
 async def rec_start(request: Request) -> dict:
-    return await _command(_controller(request).camera.rec_start)
+    return await _command(_controller(request).rec_start)
 
 
 @app.post("/api/rec/stop", **COMMAND)
 async def rec_stop(request: Request) -> dict:
-    return await _command(_controller(request).camera.rec_stop)
+    return await _command(_controller(request).rec_stop)
 
 
 @app.post("/api/iso", **COMMAND)

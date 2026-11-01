@@ -108,6 +108,16 @@ sitting it out brings nothing anyway: registering again only works with a
 reachable camera, and once it answers again, its reply says where things
 stand.
 
+Seen in continuous operation (log of a recording running for hours): the
+camera left the WLAN for one to two minutes, about four hours into the
+session, twice in a row. When it answered again, it refused the old session
+with `err_critical`. Right after the new registration `rec` was still `on`,
+five seconds later `off` with `cammode` still `rec`, and only a few seconds
+after that the camera reported `play`. So a recording does not survive the
+camera leaving the WLAN; the app starts it again instead (`RESUME_WINDOW` in
+`app.py`), and only once `rec` has held for a moment after the recording
+ended.
+
 Also to be avoided while `rec` is `on`: any mode change via `recmode`. Shortly
 after a registration the camera reports `cammode=play`, and a reflexive
 switch back at that moment ends the recording.
