@@ -108,13 +108,15 @@ sitting it out brings nothing anyway: registering again only works with a
 reachable camera, and once it answers again, its reply says where things
 stand.
 
-Seen in continuous operation (log of a recording running for hours): the
-camera left the WLAN for one to two minutes, about four hours into the
-session, twice in a row. When it answered again, it refused the old session
+Seen in continuous operation (logs of recordings running for hours): the
+camera stopped answering for up to two minutes, every two to four hours,
+with `Host is unreachable` on the app's side. The access point's log showed
+no disconnect at those times, so the camera stays in the WLAN and only stops
+answering. When it answered again, it refused the old session
 with `err_critical`. Right after the new registration `rec` was still `on`,
 five seconds later `off` with `cammode` still `rec`, and only a few seconds
-after that the camera reported `play`. So a recording does not survive the
-camera leaving the WLAN; the app starts it again instead (`RESUME_WINDOW` in
+after that the camera reported `play`. So a recording does not survive such
+an outage; the app starts it again instead (`RESUME_WINDOW` in
 `app.py`).
 
 When it does, the order matters. In four logged cases the camera dropped into

@@ -243,7 +243,7 @@ class Controller:
     SETTLE_TIMEOUT = 40.0   # after this, try anyway
     SETTLE_RETRY = 8.0      # gap between two recmode attempts
 
-    # Recording after a lost session. The camera at times leaves the WLAN for
+    # Recording after a lost session. The camera at times stops answering for
     # a minute or two and then refuses the old session; registering again is
     # the only way back, and it ends the running recording. Seen on the
     # device: 'rec' was still 'on' right after the registration and 'off' a
