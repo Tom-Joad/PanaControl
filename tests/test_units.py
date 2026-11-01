@@ -270,6 +270,27 @@ def test_a_recording_ending_later_stays_stopped(keeper):
     assert controller._rec_wanted is False
 
 
+def test_the_start_waits_for_the_drop_into_playback(keeper):
+    # 17:38 on the device: off with 'rec' still reported, a start a few
+    # seconds later was refused with err_critical, then came 'play'.
+    _, poll = keeper
+    poll(0.5, recording=True)
+    poll(5, recording=False)
+    assert poll(5, recording=False) == []
+    poll(1, recording=False, mode="play")
+    poll(1, recording=False)
+    assert poll(5, recording=False) == ["rec_start"]
+
+
+def test_without_a_drop_the_start_comes_later(keeper):
+    _, poll = keeper
+    poll(0.5, recording=True)
+    poll(5, recording=False)
+    for _ in range(3):
+        assert poll(5, recording=False) == []
+    assert poll(5, recording=False) == ["rec_start"]
+
+
 def test_a_stop_through_the_app_is_not_undone(keeper):
     controller, poll = keeper
     poll(0.5, recording=True)
@@ -287,6 +308,7 @@ def test_nothing_is_started_that_was_not_recording(keeper):
 def test_resuming_gives_up_after_a_few_tries(keeper):
     _, poll = keeper
     poll(0.5, recording=True)
+    poll(5, recording=False, mode="play")
     for _ in range(10):
         poll(5, recording=False)
     assert poll(5, recording=False) == ["rec_start"] * appmod.Controller.RESUME_TRIES

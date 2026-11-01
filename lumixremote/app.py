@@ -253,6 +253,11 @@ class Controller:
     # battery) and stays stopped.
     RESUME_WINDOW = 90.0
     RESUME_TRIES = 3        # per registration
+    # After the recording has ended, the camera still drops into playback on
+    # its own, seen 6 to 11 s after the registration. A video_recstart before
+    # that is refused with err_critical. So the start waits for the drop and
+    # for recmode; if no drop comes, it goes ahead after this long in 'rec'.
+    RESUME_NO_DROP = 20.0
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -284,6 +289,7 @@ class Controller:
         self._rec_wanted = False
         self._rec_mode_since: float | None = None
         self._rec_off_since: float | None = None
+        self._rec_dropped = False
         self._connected_at = 0.0
         self._resumes = 0
         self._iso = ""
@@ -602,6 +608,9 @@ class Controller:
             return
         if self._rec_off_since is None:
             self._rec_off_since = now
+            self._rec_dropped = False
+        if mode != "rec":
+            self._rec_dropped = True
 
         since_connect = now - self._connected_at
         if not self._connected_at or since_connect > self.RESUME_WINDOW:
@@ -611,13 +620,12 @@ class Controller:
             return
 
         # recmode is sent by _read_state. 'rec' has to hold for a moment after
-        # the recording ended: seen on the device, the camera only dropped
-        # into playback several seconds later, which would end a recording
-        # started right away.
+        # the camera's own drop into playback, see RESUME_NO_DROP.
         if self._resumes >= self.RESUME_TRIES or mode != "rec":
             return
         steady_since = max(self._rec_mode_since, self._rec_off_since)
-        if now - steady_since < self.SETTLE_STABLE:
+        wait = self.SETTLE_STABLE if self._rec_dropped else self.RESUME_NO_DROP
+        if now - steady_since < wait:
             return
         self._resumes += 1
         try:

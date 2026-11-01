@@ -115,8 +115,14 @@ with `err_critical`. Right after the new registration `rec` was still `on`,
 five seconds later `off` with `cammode` still `rec`, and only a few seconds
 after that the camera reported `play`. So a recording does not survive the
 camera leaving the WLAN; the app starts it again instead (`RESUME_WINDOW` in
-`app.py`), and only once `rec` has held for a moment after the recording
-ended.
+`app.py`).
+
+When it does, the order matters. In four logged cases the camera dropped into
+`play` after the recording had ended, 6 to 11 s after the registration.
+A `video_recstart` sent before that drop, with `cammode` still `rec`, was
+refused with `err_critical`, and the `recmode` right after it with
+`err_busy`. One sent after the drop and a `recmode` was accepted, and the
+recording ran on.
 
 Also to be avoided while `rec` is `on`: any mode change via `recmode`. Shortly
 after a registration the camera reports `cammode=play`, and a reflexive
