@@ -261,7 +261,7 @@ survives a longer pause without commands.
 | `lumixremote/probe.py` | Measuring run and results |
 | `docs/protocol.md` | What was verified on the device |
 | `unraid/README-UNRAID.md` | Running on an Unraid server |
-| `unraid/PanaControl.xml` | Container template for Unraid |
+| `unraid/panacontrol.xml` | Container template for Unraid |
 | `root/etc/s6-overlay/` | s6 services: settings check, app as `abc`, start banner |
 | `tests/smoke.sh` | Smoke test of the image |
 | `.github/workflows/build-and-push.yml` | Checks; for tags build, publish, sign |

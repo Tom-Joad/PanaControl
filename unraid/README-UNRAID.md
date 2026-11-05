@@ -24,10 +24,12 @@ the `Template` list. Set:
 - **Network Type** `br0` (preset) and a **Fixed IP address** in the camera's
   subnet. The interface is then at `http://<that address>:8080/`.
 - **LUMIX_CAMERA_IP**, the camera's address.
-- **TZ**, your time zone. `PUID=99` and `PGID=100` are preset.
+- `PUID=99` and `PGID=100` are preset. Unraid sets `TZ` from its own time zone (**Settings** → **Date and Time**),
+  so the log time stamps follow the server.
 
-The template carries its `TemplateURL`, so Unraid picks up changes to it
-by itself.
+Unraid doesn't update the template of an installed container: a setting
+added in a later version needs **Edit** → **Add another Path, Port,
+Variable, Label or Device**.
 
 When editing the template, keep two quirks of the format, or Unraid shows
 empty fields: **no comment before the root element**, and the `Config`
