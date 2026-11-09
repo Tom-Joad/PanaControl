@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from lumixremote import app as appmod
-from lumixremote.camera import _hexencode, _looks_like_session
+from lumixremote.camera import Camera, CameraState, LumixError, _hexencode, _looks_like_session
 from lumixremote.stream import LiveStream, StreamStats, extract_jpeg, jpeg_dimensions
 
 
@@ -61,9 +61,36 @@ def test_iso_values_come_from_the_menu_without_duplicates():
     assert appmod.iso_values_from_menu("not xml") == []
 
 
-def test_camera_reply_is_taken_from_the_error_text():
-    assert appmod._camera_reply("camera refused {...}: 'err_busy'") == "err_busy"
-    assert appmod._camera_reply("timeout") == ""
+def _camera_with_reply(monkeypatch, body: str | None, status: int = 200):
+    """A Camera whose HTTP layer answers with a canned reply (or times out)."""
+    import httpx
+
+    def get(url, params=None, headers=None):
+        if body is None:
+            raise httpx.ReadTimeout("timed out")
+        return httpx.Response(status, text=body)
+
+    camera = Camera("192.0.2.10")
+    camera.session_id = "0123456789abcdef"
+    monkeypatch.setattr(camera._client, "get", get)
+    return camera
+
+
+def test_a_refusal_carries_the_cameras_reply(monkeypatch):
+    camera = _camera_with_reply(monkeypatch, "<r><result>err_busy</result></r>")
+    with pytest.raises(LumixError) as caught:
+        camera.set_rec_mode()
+    assert caught.value.reply == "err_busy"
+
+
+@pytest.mark.parametrize("body, status", [(None, 200), ("", 503)])
+def test_a_timeout_or_http_error_has_no_camera_reply(monkeypatch, body, status):
+    # The request parameters in the message ('recmode') must not pass as a reply.
+    camera = _camera_with_reply(monkeypatch, body, status)
+    with pytest.raises(LumixError) as caught:
+        camera.set_rec_mode()
+    assert caught.value.reply == ""
+    assert "recmode" in str(caught.value)
 
 
 # --------------------------------------------------------------- stream ---
@@ -292,6 +319,7 @@ def test_an_unresolved_camera_name_lets_nothing_pass_until_it_resolves(monkeypat
 class FakeCamera:
     def __init__(self):
         self.calls: list[str] = []
+        self.session_id = None
 
     def rec_start(self):
         self.calls.append("rec_start")
@@ -308,6 +336,9 @@ def keeper(monkeypatch):
     controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
     controller.camera = FakeCamera()
     controller._connected_at = clock["now"]
+    # The course of a lost session: a recording was running, the camera was
+    # registered again just now.
+    controller._resume_armed = True
 
     def poll(after: float, recording: bool, mode: str = "rec") -> list[str]:
         clock["now"] += after
@@ -378,6 +409,96 @@ def test_resuming_gives_up_after_a_few_tries(keeper):
     for _ in range(10):
         poll(5, recording=False)
     assert poll(5, recording=False) == ["rec_start"] * appmod.Controller.RESUME_TRIES
+
+
+def test_a_recording_started_after_the_registration_is_never_resumed(keeper):
+    # Registration at 0 s, recording started in the app at 15 s, stopped on
+    # the camera body at 50 s (the camera stays in 'rec').
+    controller, poll = keeper
+    controller._resume_armed = False
+    poll(15, recording=True)
+    poll(35, recording=True)
+    for _ in range(10):
+        assert poll(5, recording=False) == []
+    assert controller._rec_wanted is False
+
+
+def test_a_start_through_the_app_disarms_the_resume(keeper):
+    controller, poll = keeper
+    controller.rec_start()
+    poll(5, recording=False)
+    assert poll(30, recording=False) == ["rec_start"]   # the app's own start only
+
+
+def test_a_loss_while_recording_arms_the_resume(keeper):
+    controller, _ = keeper
+    controller._resume_armed = False
+    controller._rec_wanted = True
+    controller._fail(LumixError("lost"))
+    assert controller._resume_armed is True
+
+
+def test_a_loss_without_a_recording_arms_nothing(keeper):
+    controller, _ = keeper
+    controller._resume_armed = False
+    controller._fail(LumixError("lost"))
+    assert controller._resume_armed is False
+
+
+class PollingCamera(FakeCamera):
+    """Answers getstate with a script; a hook can run while the poll is 'in flight'."""
+
+    def __init__(self):
+        super().__init__()
+        self.replies: list[dict[str, str]] = []
+        self.in_flight = None
+
+    def get_state(self):
+        reply = self.replies.pop(0)
+        if self.in_flight:
+            self.in_flight()
+        return CameraState(raw=reply)
+
+    def get_setting(self, name):
+        return ""
+
+
+def test_a_poll_in_flight_during_a_stop_does_not_undo_it(keeper):
+    controller, poll = keeper
+    camera = controller.camera = PollingCamera()
+    poll(5, recording=True)
+    # rec_stop() runs while the next poll waits for its reply, which still
+    # says 'rec=on'.
+    camera.in_flight = controller.rec_stop
+    camera.replies = [{"rec": "on"}]
+    controller._read_state()
+    camera.in_flight = None
+    assert controller._rec_wanted is False
+    camera.replies = [{"rec": "off"}]
+    controller._read_state()
+    poll(30, recording=False)
+    assert camera.calls == ["rec_stop"]
+
+
+def test_resume_timing_does_not_carry_over_to_a_new_registration(keeper):
+    # A recording lost in one registration, no success, session lost again:
+    # the next registration waits for the camera's own drop like the first.
+    controller, poll = keeper
+    poll(0.5, recording=True)
+    poll(5, recording=False, mode="play")      # the drop is seen
+    assert controller._rec_dropped is True
+    controller.camera = FakeCamera()
+    controller.camera.connect = lambda: None
+    controller.camera.describe = lambda: None
+    controller.camera.stop_stream = lambda: None
+    controller._read_capabilities = lambda: None
+    controller._settle = lambda: None
+    controller._establish()
+    assert controller._rec_off_since is None
+    assert controller._rec_dropped is False
+    # 'rec' without a drop: nothing is sent after the short settle time.
+    poll(0.5, recording=True)
+    assert poll(6, recording=False) == []
 
 
 def test_status_answers_head_and_names_the_version():
