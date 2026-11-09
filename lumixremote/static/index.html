@@ -452,9 +452,18 @@ function render(s, transportError) {
   el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
 
   stage.classList.toggle("recording", !!s.recording);
-  setButtons(s.status === "online" && !s.recording, s.status === "online" && s.recording);
+  // Stop needs a session, not record mode: a recording the camera reports
+  // outside 'rec' can still be stopped.
+  const session = s.status === "online" || s.status === "standby";
+  setButtons(s.status === "online" && !s.recording, session && s.recording);
 
-  if (s.status === "standby") {
+  if (s.status === "standby" && s.recording) {
+    overlay(true, "Recording continues",
+            "The camera reports " + (s.cammode || "?") + " instead of record mode, " +
+            "so there is no live view. The recording is not affected and can be " +
+            "stopped here.",
+            s.error);
+  } else if (s.status === "standby") {
     // Measured on the device: from playback, the DC-GH6 can't be brought
     // back by command. So say what to do.
     overlay(true, "Not in record mode",
@@ -464,8 +473,8 @@ function render(s, transportError) {
             s.error);
   } else if (s.status === "offline") {
     overlay(true, "Connection lost",
-            "The app registers again every five seconds. If it stays like " +
-            "this, switch the camera off and on: it holds only one session.",
+            "The app registers again, with growing gaps of up to a minute. " +
+            "If it stays like this, switch the camera off and on: it holds only one session.",
             s.error);
   } else if (s.status === "connecting") {
     // A remaining error means this is not the first attempt.
