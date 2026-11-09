@@ -24,7 +24,15 @@ DESCRIPTOR_PATH = "/Lumix/Server0/ddd"
 
 
 class LumixError(RuntimeError):
-    """Error in the communication with the camera."""
+    """Error in the communication with the camera.
+
+    `reply` is the camera's own answer (`err_busy`, ...) when it answered with
+    something other than `ok`; empty for every other failure.
+    """
+
+    def __init__(self, message: str = "", reply: str = ""):
+        super().__init__(message)
+        self.reply = reply
 
 
 class NotConnected(LumixError):
@@ -142,7 +150,7 @@ class Camera:
             raise LumixError(f"unreadable reply to {params}: {text!r}") from exc
         result = root.findtext("result", default="")
         if result != "ok":
-            raise LumixError(f"camera refused {params}: {result!r}")
+            raise LumixError(f"camera refused {params}: {result!r}", reply=result)
         return root
 
     # ------------------------------------------------------------------ #

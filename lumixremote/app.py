@@ -146,17 +146,6 @@ def av_to_fnumber(raw: int) -> str:
     return f"f/{snapped:.1f}" if snapped < 10 else f"f/{snapped:.0f}"
 
 
-def _camera_reply(message: str) -> str:
-    """Extract the camera's bare reply from an error message.
-
-    LumixError carries text ending in `: 'err_busy'`. For the interface only
-    the `err_busy` counts.
-    """
-    if "'" in message:
-        return message.rsplit("'", 2)[-2]
-    return ""
-
-
 def lens_anchor(lens_reply: str) -> bytes | None:
     """Build the search pattern the aperture follows in the stream header.
 
@@ -250,7 +239,8 @@ class Controller:
     # few seconds later, with the camera in playback. A recording that ends
     # this soon after a registration was ended by it and is started again;
     # one that ends later was stopped on purpose (on the camera, card full,
-    # battery) and stays stopped.
+    # battery) and stays stopped. Only a recording that was running when the
+    # session was lost is resumed, and only after the next registration.
     RESUME_WINDOW = 90.0
     RESUME_TRIES = 3        # per registration
     # After the recording has ended, the camera still drops into playback on
@@ -287,6 +277,13 @@ class Controller:
         # app or a recording seen on the camera, cleared by a stop through
         # the app or a recording that ended while the session held.
         self._rec_wanted = False
+        # A resume is allowed only for a recording that was running when the
+        # session was lost, and only for the registration that follows. A
+        # recording started later, or stopped after the window, stays stopped.
+        self._resume_armed = False
+        # Counts stops through the app, so a poll that started before a stop
+        # can't bring the ended recording back.
+        self._stop_seq = 0
         self._rec_mode_since: float | None = None
         self._rec_off_since: float | None = None
         self._rec_dropped = False
@@ -398,6 +395,8 @@ class Controller:
         self._registered_at = time.monotonic()
         self._connected_at = self._registered_at
         self._rec_mode_since = None
+        self._rec_off_since = None
+        self._rec_dropped = False
         self._resumes = 0
         log.info("registered")
 
@@ -537,13 +536,17 @@ class Controller:
 
     def _read_state(self) -> None:
         """Poll the camera and decide whether it can stream at all."""
+        stop_seq = self._stop_seq
         state = self.camera.get_state()
         # It answered, so a running dropout is over.
         self._unreachable_since = None
         # If a firmware reports no cammode, assume it is ready to record.
         mode = state.raw.get("cammode", "rec")
         self._set(state=state, cammode=mode)
-        self._follow_recording(state.recording, mode)
+        # A reply to a poll sent before a stop through the app may still say
+        # 'rec=on'; it must not make the ended recording wanted again.
+        stale = stop_seq != self._stop_seq
+        self._follow_recording(state.recording and not stale, mode)
 
         if mode == "rec":
             self._recmode_tried = False
@@ -579,7 +582,7 @@ class Controller:
                 self._recmode_error = ""
                 log.info("recmode_sent", extra={"cammode": mode})
             except LumixError as exc:
-                self._recmode_error = _camera_reply(str(exc))
+                self._recmode_error = exc.reply
                 log.info("recmode_refused", extra={"error": str(exc)})
 
         reason = f"Camera is in '{mode}' instead of record mode"
@@ -613,8 +616,10 @@ class Controller:
             self._rec_dropped = True
 
         since_connect = now - self._connected_at
-        if not self._connected_at or since_connect > self.RESUME_WINDOW:
+        if (not self._resume_armed or not self._connected_at
+                or since_connect > self.RESUME_WINDOW):
             self._rec_wanted = False
+            self._resume_armed = False
             self._rec_off_since = None
             log.info("recording_ended")
             return
@@ -640,11 +645,14 @@ class Controller:
     def rec_start(self) -> None:
         self.camera.rec_start()
         self._rec_wanted = True
+        self._resume_armed = False
 
     def rec_stop(self) -> None:
         # Cleared first: a state poll between the stop and its reply must not
         # take the ended recording for one to resume.
+        self._stop_seq += 1
         self._rec_wanted = False
+        self._resume_armed = False
         self.camera.rec_stop()
 
     def _begin_stream(self) -> None:
@@ -678,6 +686,8 @@ class Controller:
         else:
             self._churn = 0
         self._registered_at = 0.0
+        # A recording running now is ended by the re-registration that follows.
+        self._resume_armed = self._resume_armed or self._rec_wanted
 
         if self._churn >= self.CHURN_ALARM:
             log.warning("session_churn", extra={
