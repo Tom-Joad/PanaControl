@@ -35,7 +35,7 @@ is in use.
 | Tag | Meaning |
 |---|---|
 | `latest` | The latest release |
-| `2.1.0`, `2.1` | A specific release / the latest patch of a minor version |
+| `X.Y.Z`, `X.Y` | A specific release / the latest patch of a minor version |
 | `sha-<commit>` | A specific build |
 | `dev` | Test build from a branch, made by a manual run; not for regular use |
 

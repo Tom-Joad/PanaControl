@@ -227,6 +227,36 @@ def test_allowed_hosts_come_from_the_environment(monkeypatch, tmp_path):
     assert not appmod.host_allowed("third.example.com", cfg.allowed_hosts)
 
 
+def _config(monkeypatch, tmp_path, toml: str | None = None, env: str | None = None):
+    monkeypatch.setenv("LUMIX_CAMERA_IP", "192.0.2.10")
+    monkeypatch.delenv("LUMIX_ALLOWED_HOSTS", raising=False)
+    if env is not None:
+        monkeypatch.setenv("LUMIX_ALLOWED_HOSTS", env)
+    path = tmp_path / "config.toml"
+    if toml is not None:
+        path.write_text(toml)
+    return appmod.Config.load(path)
+
+
+def test_allowed_hosts_as_a_string_is_one_name(monkeypatch, tmp_path):
+    cfg = _config(monkeypatch, tmp_path, '[web]\nallowed_hosts = "Cam.Example.com"\n')
+    assert cfg.allowed_hosts == ("cam.example.com",)
+
+
+def test_allowed_hosts_lose_their_port(monkeypatch, tmp_path):
+    cfg = _config(monkeypatch, tmp_path, env="cam.example.com:8443, [::1]:80")
+    assert cfg.allowed_hosts == ("cam.example.com", "::1")
+    assert appmod.host_allowed("cam.example.com:8443", cfg.allowed_hosts)
+    cfg = _config(monkeypatch, tmp_path, '[web]\nallowed_hosts = ["cam.example.com:8443"]\n')
+    assert cfg.allowed_hosts == ("cam.example.com",)
+
+
+@pytest.mark.parametrize("value", ["5", "[1, 2]", '{a = "b"}'])
+def test_allowed_hosts_of_another_type_stop_the_start(monkeypatch, tmp_path, value):
+    with pytest.raises(SystemExit, match="allowed_hosts"):
+        _config(monkeypatch, tmp_path, f"[web]\nallowed_hosts = {value}\n")
+
+
 # ------------------------------------------------------------- receiver ---
 
 def test_frames_from_another_sender_are_dropped():
@@ -246,6 +276,42 @@ def test_frames_from_another_sender_are_dropped():
     assert stream.stats.foreign == 1
     assert stream.stats.frames == 0
     assert stream.latest_frame is None
+
+
+def test_an_unresolved_camera_name_lets_nothing_pass_until_it_resolves(monkeypatch):
+    import socket as so
+    from lumixremote import stream as streammod
+
+    answers = {"ip": None}
+
+    def lookup(name):
+        if answers["ip"] is None:
+            raise so.gaierror("no such name")
+        return answers["ip"]
+
+    monkeypatch.setattr(streammod.socket, "gethostbyname", lookup)
+    monkeypatch.setattr(streammod, "SOURCE_RETRY", 0.0)
+    stream = LiveStream(port=0, source="cam.example.com")
+    stream.start()
+    try:
+        port = stream._sock.getsockname()[1]
+        packet = b"HDR" + b"\xff\xd8\xff" + b"fake" + b"\xff\xd9"
+        with so.socket(so.AF_INET, so.SOCK_DGRAM) as sender:
+            sender.sendto(packet, ("127.0.0.1", port))
+            deadline = time.monotonic() + 2
+            while stream.stats.foreign == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert stream.stats.foreign == 1 and stream.stats.frames == 0
+            # The name resolves later (a new registration): frames pass.
+            answers["ip"] = "127.0.0.1"
+            stream.start()
+            sender.sendto(packet, ("127.0.0.1", port))
+            deadline = time.monotonic() + 2
+            while stream.stats.frames == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+    finally:
+        stream.stop()
+    assert stream.stats.frames == 1
 
 
 # ------------------------------------------------------- resume recording ---
@@ -433,3 +499,17 @@ def test_resume_timing_does_not_carry_over_to_a_new_registration(keeper):
     # 'rec' without a drop: nothing is sent after the short settle time.
     poll(0.5, recording=True)
     assert poll(6, recording=False) == []
+
+
+def test_status_answers_head_and_names_the_version():
+    from lumixremote import __version__
+
+    app = appmod.app
+    app.state.controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    try:
+        c = TestClient(app)
+        assert c.get("/api/status").json()["version"] == __version__
+        head = c.head("/api/status")
+        assert head.status_code == 200
+    finally:
+        del app.state.controller

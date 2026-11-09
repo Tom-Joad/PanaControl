@@ -7,6 +7,10 @@ only comes with a new major version.
 
 ## [Unreleased]
 
+### Added
+- **`/api/status` answers `HEAD` and reports the version.** Scripts and
+  monitoring can tell which release is running.
+
 ### Fixed
 - **A recording you stop on purpose stays stopped.** The automatic restart
   now applies only to a recording that was running when the connection was
@@ -19,6 +23,20 @@ only comes with a new major version.
   waits for the camera's own drop into playback as intended.
 - **A timeout is no longer reported as "Mode change refused".** The message
   names the camera's reply only when the camera actually answered.
+- **Stop works while the camera records outside record mode.** The button
+  stays enabled and the overlay says the recording continues.
+- **The live view accepts frames only from the camera.** While the camera
+  name can't be resolved, all frames are dropped (before, every sender on
+  the network was accepted), and the name is resolved again at each new
+  registration.
+- **`allowed_hosts` in `config.toml` may be a single name,** and entries
+  with a port (`cam.example.com:8443`) match like the host name does.
+  Anything else stops the start with `config_invalid`.
+- The "Connection lost" text says that the app retries with growing gaps.
+
+### Docs
+- The README tag table uses `X.Y.Z` examples; the `3.2.0` changelog heading
+  links to its comparison.
 
 ## [3.2.0] - 2026-11-09
 
@@ -241,6 +259,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.2.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.1.2...v3.2.0
 [3.1.2]: https://github.com/Tom-Joad/PanaControl/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/Tom-Joad/PanaControl/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.0.4...v3.1.0

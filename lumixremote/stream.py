@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 SOI = b"\xff\xd8\xff"   # Start of Image
 EOI = b"\xff\xd9"       # End of Image
 MAX_DATAGRAM = 65535
+# Gap between two lookups of an unresolved camera name by the receiver.
+SOURCE_RETRY = 5.0
 
 # SOF markers that carry the image dimensions. C4/C8/CC are Huffman/arithmetic.
 SOF_MARKERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
@@ -104,6 +106,7 @@ class LiveStream:
         # view, and its header the aperture shown.
         self.source = source
         self._source_ip: str | None = None
+        self._source_tried = 0.0
         self.stall_after = stall_after
         self.recv_buffer = recv_buffer
         self.stats = StreamStats()
@@ -120,7 +123,20 @@ class LiveStream:
 
     # ------------------------------------------------------------------ #
 
+    def _resolve_source(self) -> None:
+        """Look up the camera's address. While it is unknown, nothing passes."""
+        self._source_tried = time.monotonic()
+        if not self.source:
+            return
+        try:
+            self._source_ip = socket.gethostbyname(self.source)
+        except OSError:
+            log.warning("stream_source_unresolved", extra={"port": self.port})
+
     def start(self) -> None:
+        # Resolved at every start, also while the receiver runs: a camera
+        # address given as a name may change between sessions.
+        self._resolve_source()
         if self._running.is_set():
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -132,15 +148,6 @@ class LiveStream:
             log.debug("rcvbuf_not_set")
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.5)
-        # Resolved at every start: a camera address given as a name may
-        # change between sessions.
-        self._source_ip = None
-        if self.source:
-            try:
-                self._source_ip = socket.gethostbyname(self.source)
-            except OSError:
-                log.warning("stream_source_unresolved", extra={"port": self.port})
-
         self._sock = sock
         self._running.set()
         self.stats = StreamStats()
@@ -169,7 +176,11 @@ class LiveStream:
                 continue
             except OSError:
                 break
-            if self._source_ip is not None and addr[0] != self._source_ip:
+            if self.source and self._source_ip is None and (
+                    time.monotonic() - self._source_tried >= SOURCE_RETRY):
+                self._resolve_source()
+            # Fail closed: with a source set but not resolved, nothing passes.
+            if self.source and addr[0] != self._source_ip:
                 self.stats.foreign += 1
                 if self.stats.foreign == 1:
                     log.warning("stream_foreign_sender", extra={"port": self.port})

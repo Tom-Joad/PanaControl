@@ -97,6 +97,19 @@ class Config:
                 raise SystemExit(f"{env} must be a port number from 1 to 65535, got {raw!r}")
             return number
 
+        if "LUMIX_ALLOWED_HOSTS" in os.environ:
+            hosts = os.environ["LUMIX_ALLOWED_HOSTS"].split(",")
+        else:
+            hosts = web.get("allowed_hosts", [])
+            if isinstance(hosts, str):
+                hosts = [hosts]
+        if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
+            raise SystemExit("allowed_hosts must be a host name or a list of host names, "
+                             f"got {hosts!r}")
+        # Ports and brackets are removed like from the Host header, or an
+        # entry such as "cam.example.com:8443" would never match.
+        allowed_hosts = tuple(name for name in map(host_name, hosts) if name)
+
         cfg = cls(
             camera_ip=os.environ.get("LUMIX_CAMERA_IP", camera.get("ip", "")),
             device_name=os.environ.get(
@@ -105,12 +118,7 @@ class Config:
             stream_port=port("LUMIX_STREAM_PORT", stream.get("port", 49199)),
             web_host=os.environ.get("LUMIX_WEB_HOST", web.get("host", "127.0.0.1")),
             web_port=port("LUMIX_WEB_PORT", web.get("port", 8080)),
-            allowed_hosts=tuple(
-                h.strip().lower().rstrip(".")
-                for h in (os.environ["LUMIX_ALLOWED_HOSTS"].split(",") if "LUMIX_ALLOWED_HOSTS" in os.environ
-                          else web.get("allowed_hosts", []))
-                if h.strip()
-            ),
+            allowed_hosts=allowed_hosts,
         )
         if not cfg.camera_ip:
             raise SystemExit(
@@ -754,6 +762,7 @@ class Controller:
             anchor = self._lens_anchor
         stats = self.stream.stats
         return {
+            "version": __version__,
             "status": status,
             "error": error,
             "cammode": cammode,
@@ -926,7 +935,7 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.get("/api/status")
+@app.api_route("/api/status", methods=["GET", "HEAD"])
 async def status(request: Request) -> dict:
     return _controller(request).snapshot()
 
