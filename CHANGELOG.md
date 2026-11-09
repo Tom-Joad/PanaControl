@@ -5,6 +5,21 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Fixed
+- **A recording you stop on purpose stays stopped.** The automatic restart
+  now applies only to a recording that was running when the connection was
+  lost, and only for the registration that follows. A recording started
+  later, or one stopped on the camera, is no longer started again within 90
+  seconds of a registration. A stop in the app can no longer be undone by a
+  status reply that was already on its way.
+- **The restart after a second connection loss waits long enough.** The
+  timing of the previous registration no longer carries over, so the restart
+  waits for the camera's own drop into playback as intended.
+- **A timeout is no longer reported as "Mode change refused".** The message
+  names the camera's reply only when the camera actually answered.
+
 ## [3.2.0] - 2026-11-09
 
 ### Added
