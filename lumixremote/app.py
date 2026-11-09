@@ -289,6 +289,10 @@ class Controller:
         # session was lost, and only for the registration that follows. A
         # recording started later, or stopped after the window, stays stopped.
         self._resume_armed = False
+        # True until the first state poll after a registration: a recording
+        # seen running then was running before it, also after a restart of
+        # the app, and arms the resume like a lost session does.
+        self._first_poll = False
         # Counts stops through the app, so a poll that started before a stop
         # can't bring the ended recording back.
         self._stop_seq = 0
@@ -406,6 +410,7 @@ class Controller:
         self._rec_off_since = None
         self._rec_dropped = False
         self._resumes = 0
+        self._first_poll = True
         log.info("registered")
 
         # A stream from a lost session keeps running on the camera and makes
@@ -611,9 +616,12 @@ class Controller:
         elif self._rec_mode_since is None:
             self._rec_mode_since = now
 
+        first_poll, self._first_poll = self._first_poll, False
         if recording:
             self._rec_wanted = True
             self._rec_off_since = None
+            if first_poll:
+                self._resume_armed = True
             return
         if not self._rec_wanted:
             return

@@ -438,6 +438,38 @@ def test_a_loss_while_recording_arms_the_resume(keeper):
     assert controller._resume_armed is True
 
 
+def _register(controller):
+    controller.camera.connect = lambda: None
+    controller.camera.describe = lambda: None
+    controller.camera.stop_stream = lambda: None
+    controller._read_capabilities = lambda: None
+    controller._settle = lambda: None
+    controller._establish()
+
+
+def test_a_recording_running_at_the_first_poll_arms_the_resume(keeper):
+    # The app was restarted while the camera recorded: no session was lost
+    # in this process, but the registration ends the recording all the same.
+    controller, poll = keeper
+    controller._resume_armed = False
+    _register(controller)
+    poll(0.5, recording=True)
+    assert controller._resume_armed is True
+    assert poll(5, recording=False) == []
+    assert poll(5, recording=False, mode="play") == []
+    assert poll(1, recording=False) == []
+    assert poll(5, recording=False) == ["rec_start"]
+
+
+def test_a_recording_seen_after_the_first_poll_arms_nothing(keeper):
+    controller, poll = keeper
+    controller._resume_armed = False
+    _register(controller)
+    poll(0.5, recording=False)
+    poll(5, recording=True)
+    assert controller._resume_armed is False
+
+
 def test_a_loss_without_a_recording_arms_nothing(keeper):
     controller, _ = keeper
     controller._resume_armed = False
@@ -488,12 +520,7 @@ def test_resume_timing_does_not_carry_over_to_a_new_registration(keeper):
     poll(5, recording=False, mode="play")      # the drop is seen
     assert controller._rec_dropped is True
     controller.camera = FakeCamera()
-    controller.camera.connect = lambda: None
-    controller.camera.describe = lambda: None
-    controller.camera.stop_stream = lambda: None
-    controller._read_capabilities = lambda: None
-    controller._settle = lambda: None
-    controller._establish()
+    _register(controller)
     assert controller._rec_off_since is None
     assert controller._rec_dropped is False
     # 'rec' without a drop: nothing is sent after the short settle time.
