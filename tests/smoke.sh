@@ -113,6 +113,8 @@ echo "== web UI"
 [[ $(request /) == 200 ]] || fail "/ does not answer 200"
 [[ $(request /static/css/tokens.css) == 200 ]] || fail "the stylesheet is not served"
 [[ $(request /static/css/fonts/Anton-Regular-latin.woff2) == 200 ]] || fail "the fonts are not served"
+[[ $(request /static/app/manifest.json) == 200 ]] || fail "the web app manifest is not served"
+[[ $(request /static/app/keep-awake.mp4) == 200 ]] || fail "the keep-awake video is not served"
 [[ $(request /api/status) == 200 ]] || fail "/api/status does not answer 200"
 
 echo "== commands from other web sites are refused"

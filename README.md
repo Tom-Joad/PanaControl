@@ -77,6 +77,28 @@ Install **PanaControl** from Community Applications; the guide is
 [`unraid/README-UNRAID.md`](unraid/README-UNRAID.md). The template runs the
 container on `br0` with a fixed IP.
 
+## In the browser
+
+| Key or gesture | Action |
+|---|---|
+| Space | Start a recording |
+| F | Autofocus |
+| V, the button in the corner of the picture, or a double-click or double-tap on it | Full screen on and off |
+| Esc | Leave full screen |
+
+No key stops a recording: only a click or tap on **Stop** does.
+
+**Full screen** shows only the live view; the red frame and REC stay. On a
+computer, Android and the iPad the page goes into the browser's real full
+screen. The iPhone allows that only for videos, so there the bar is hidden.
+For the whole display, add the page to the home screen (Safari: Share ->
+Add to Home Screen): it then opens without the browser's bars.
+
+While full screen is on, the screen stays on. Over HTTPS the browser's Wake
+Lock does this; over plain HTTP, as on the LAN, the page plays a short,
+silent, muted video instead, which keeps phones and tablets from locking.
+If a device locks anyway, set its auto-lock to never.
+
 ## Parameters
 
 | Parameter | Default | Meaning |
@@ -257,7 +279,7 @@ survives a longer pause without commands.
 | `lumixremote/camera.py` | DLNA probe, registration, commands, reconnect |
 | `lumixremote/stream.py` | UDP receiver, JPEG extraction, statistics |
 | `lumixremote/app.py` | Connection keeper, routes, MJPEG output |
-| `lumixremote/static/` | Interface without a build step, stylesheets and fonts |
+| `lumixremote/static/` | Interface without a build step, stylesheets and fonts; `app/` holds the home-screen manifest, icons and the keep-awake video |
 | `lumixremote/probe.py` | Measuring run and results |
 | `docs/protocol.md` | What was verified on the device |
 | `unraid/README-UNRAID.md` | Running on an Unraid server |
