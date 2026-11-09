@@ -5,6 +5,19 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Added
+- **Full screen for the live view.** The button in the corner of the
+  picture, the V key or a double-click or double-tap switch it on and off;
+  Esc leaves it. The bar disappears, the red frame and REC stay. The iPhone
+  allows real full screen only for videos, so there the bar is hidden.
+- **Home screen.** Added to the home screen, the page opens as an app
+  without the browser's bars, with the PanaControl icon.
+- **The screen stays on in full screen.** Over plain HTTP the browser
+  offers no Wake Lock, so a short, silent, muted video plays while full
+  screen is on; over HTTPS the Wake Lock is used.
+
 ## [3.1.2] - 2026-11-09
 
 ### Changed

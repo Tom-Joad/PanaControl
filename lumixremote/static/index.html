@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PanaControl</title>
+<!-- Added to the home screen, the page opens without the browser's bars. -->
+<link rel="manifest" href="/static/app/manifest.json">
+<link rel="apple-touch-icon" href="/static/app/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PanaControl">
+<meta name="theme-color" content="#16130d">
 <link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/static/css/base.css">
 <style>
@@ -162,6 +170,8 @@
     overflow: hidden;
     background: var(--pitch);
     border: var(--stroke-hairline) solid var(--border-on-ink);
+    /* A double-tap switches full screen instead of zooming. */
+    touch-action: manipulation;
   }
   /* Recording: the frame carries a red edge, visible from two metres. */
   main.recording { border: var(--stroke-accent) solid var(--red); }
@@ -215,6 +225,60 @@
     color: var(--text-on-ink-faint);
     font: var(--text-meta);
     word-break: break-word;
+  }
+
+  /* ---- Full screen: only the live view ------------------------------ */
+
+  #full {
+    position: absolute;
+    right: var(--space-14);
+    bottom: var(--space-14);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: var(--scrim-solid);
+    color: var(--text-on-ink);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+    border-radius: var(--radius);
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: opacity var(--duration-fade) var(--ease-standard);
+  }
+  #full svg { width: 20px; height: 20px; }
+  #full .exit { display: none; }
+
+  /* The bar goes, the stage takes the whole screen. The red edge, REC and
+     the plain-words overlay stay. */
+  body.full {
+    padding: 0;
+    gap: 0;
+    background: var(--pitch);
+  }
+  body.full header { display: none; }
+  body.full main {
+    border-color: transparent;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  body.full main.recording { border-color: var(--red); }
+  body.full #full .enter { display: none; }
+  body.full #full .exit { display: block; }
+  /* The button fades out until the pointer moves or the screen is tapped. */
+  body.full.idle #full { opacity: 0; pointer-events: none; }
+  body.full.idle main { cursor: none; }
+
+  /* Plays muted while in full screen so the phone doesn't lock. */
+  #awake {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0.01;
+    pointer-events: none;
   }
 
   /* ---- Message after a refused command ------------------------------ */
@@ -286,7 +350,20 @@
     <div class="hint"  id="ov-hint"></div>
     <div class="detail" id="ov-detail"></div>
   </div>
+  <button id="full" type="button" title="Full screen (V, or double-click the picture)" aria-label="Full screen">
+    <svg class="enter" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+      <path d="M2 7V2h5M13 2h5v5M18 13v5h-5M7 18H2v-5"/>
+    </svg>
+    <svg class="exit" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+      <path d="M7 2v5H2M18 7h-5V2M13 18v-5h5M2 13h5v5"/>
+    </svg>
+  </button>
 </main>
+
+<video id="awake" muted playsinline preload="auto" aria-hidden="true">
+  <source src="/static/app/keep-awake.mp4" type="video/mp4">
+  <source src="/static/app/keep-awake.webm" type="video/webm">
+</video>
 
 <div id="flash" role="status"><span class="tracked">Refused</span><span id="flash-text"></span></div>
 
@@ -542,8 +619,8 @@ el("stop").addEventListener("click", (e) => {
   send("/api/rec/stop", e.currentTarget);
 });
 
-/* Space starts a recording, F focuses, without looking. No key ever stops a
-   recording, whatever has the focus. */
+/* Space starts a recording, F focuses, V switches full screen, without
+   looking. No key ever stops a recording, whatever has the focus. */
 document.addEventListener("keydown", (ev) => {
   if (ev.repeat) return;
   const recording = !!(lastStatus && lastStatus.recording);
@@ -557,6 +634,138 @@ document.addEventListener("keydown", (ev) => {
     }
   } else if ((ev.key === "f" || ev.key === "F") && ev.target.tagName !== "SELECT") {
     if (!el("af").disabled) el("af").click();
+  } else if ((ev.key === "v" || ev.key === "V") && ev.target.tagName !== "SELECT") {
+    toggleFull();
+  } else if (ev.key === "Escape" && body.classList.contains("full") && !fullscreenElement()) {
+    // Hidden bar without real full screen: Esc leaves it as well.
+    leaveFull();
+  }
+});
+
+/* ---- Full screen --------------------------------------------------- */
+// Shows only the live view. Where the browser allows it (desktop, Android,
+// iPad) the page goes into real full screen. The iPhone allows that only for
+// a <video>, so there the bar is hidden; opened from the home screen, the
+// page then fills the display. Nothing here touches a recording.
+
+const root = document.documentElement;
+const body = document.body;
+let idleTimer = null;
+
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function enterFull() {
+  body.classList.add("full");
+  keepAwake(true);
+  showButton();
+  const request = root.requestFullscreen || root.webkitRequestFullscreen;
+  if (request && !fullscreenElement()) {
+    // Refused (iPhone, a policy): the bar stays hidden all the same.
+    try {
+      const p = request.call(root);
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) { /* hidden bar only */ }
+  }
+}
+
+function leaveFull() {
+  body.classList.remove("full", "idle");
+  clearTimeout(idleTimer);
+  keepAwake(false);
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  if (exit && fullscreenElement()) {
+    try {
+      const p = exit.call(document);
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) { /* already out */ }
+  }
+}
+
+function toggleFull() {
+  if (body.classList.contains("full")) leaveFull(); else enterFull();
+}
+
+// Esc or the system's own gesture ends real full screen: follow it.
+for (const name of ["fullscreenchange", "webkitfullscreenchange"]) {
+  document.addEventListener(name, () => {
+    if (!fullscreenElement() && body.classList.contains("full")) leaveFull();
+  });
+}
+
+// The button fades out after a moment; moving the pointer or tapping the
+// screen brings it back.
+function showButton() {
+  body.classList.remove("idle");
+  clearTimeout(idleTimer);
+  if (body.classList.contains("full")) {
+    idleTimer = setTimeout(() => body.classList.add("idle"), 2500);
+  }
+}
+document.addEventListener("pointermove", showButton);
+document.addEventListener("pointerdown", showButton);
+
+el("full").addEventListener("click", (e) => {
+  e.currentTarget.blur();
+  toggleFull();
+});
+
+// A double-click or double-tap on the picture switches as well. Counted by
+// hand: Safari on the iPhone does not reliably send dblclick for taps.
+let lastTap = { time: 0, x: 0, y: 0 };
+stage.addEventListener("pointerup", (ev) => {
+  if (ev.target.closest("#full")) return;
+  const near = Math.abs(ev.clientX - lastTap.x) < 40 && Math.abs(ev.clientY - lastTap.y) < 40;
+  if (ev.timeStamp - lastTap.time < 350 && near) {
+    lastTap = { time: 0, x: 0, y: 0 };
+    toggleFull();
+  } else {
+    lastTap = { time: ev.timeStamp, x: ev.clientX, y: ev.clientY };
+  }
+});
+
+/* ---- Keep the screen on in full screen ----------------------------- */
+// The Wake Lock API exists only on HTTPS and localhost; the app is usually
+// opened over plain HTTP on the LAN. There a short, silent video plays
+// muted instead, which keeps phones from locking. It is not looped with the
+// loop attribute, because Safari lets the screen sleep during looped video;
+// it is wound back before it ends.
+
+const awake = el("awake");
+let wakeLock = null;
+
+async function keepAwake(on) {
+  if (!on) {
+    awake.pause();
+    if (wakeLock) {
+      const lock = wakeLock;
+      wakeLock = null;
+      try { await lock.release(); } catch (e) { /* already released */ }
+    }
+    return;
+  }
+  if ("wakeLock" in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      return;
+    } catch (e) { /* fall back to the video */ }
+  }
+  try {
+    const p = awake.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) { /* the screen may lock */ }
+}
+
+awake.addEventListener("timeupdate", () => {
+  if (awake.currentTime > 0.5) awake.currentTime = 0.1;
+});
+
+// Both the lock and the video end when the page is hidden; take them up
+// again when it comes back.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && body.classList.contains("full")) {
+    keepAwake(true);
   }
 });
 
