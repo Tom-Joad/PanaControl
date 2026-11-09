@@ -5,7 +5,7 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.2.0] - 2026-11-09
 
 ### Added
 - **Full screen for the live view.** The button in the corner of the
