@@ -400,22 +400,18 @@ class PollingCamera(FakeCamera):
 def test_a_poll_in_flight_during_a_stop_does_not_undo_it(keeper):
     controller, poll = keeper
     camera = controller.camera = PollingCamera()
-    clock_poll = poll
-
-    camera.replies = [{"rec": "on"}]
-    clock_poll(5, recording=True)
-    # rec_stop() runs while the next poll is waiting for its reply, which
-    # still says 'rec=on'.
+    poll(5, recording=True)
+    # rec_stop() runs while the next poll waits for its reply, which still
+    # says 'rec=on'.
     camera.in_flight = controller.rec_stop
     camera.replies = [{"rec": "on"}]
-    clock_poll(1, recording=True)
     controller._read_state()
     camera.in_flight = None
     assert controller._rec_wanted is False
     camera.replies = [{"rec": "off"}]
     controller._read_state()
-    clock_poll(30, recording=False)
-    assert "rec_start" not in camera.calls
+    poll(30, recording=False)
+    assert camera.calls == ["rec_stop"]
 
 
 def test_resume_timing_does_not_carry_over_to_a_new_registration(keeper):
