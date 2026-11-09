@@ -14,10 +14,11 @@ only comes with a new major version.
 ### Fixed
 - **A recording you stop on purpose stays stopped.** The automatic restart
   now applies only to a recording that was running when the connection was
-  lost, and only for the registration that follows. A recording started
-  later, or one stopped on the camera, is no longer started again within 90
-  seconds of a registration. A stop in the app can no longer be undone by a
-  status reply that was already on its way.
+  lost or when the app registered with the camera (for example after a
+  restart of the container), and only for that registration. A recording
+  started later, or one stopped on the camera, is no longer started again
+  within 90 seconds of a registration. A stop in the app can no longer be
+  undone by a status reply that was already on its way.
 - **The restart after a second connection loss waits long enough.** The
   timing of the previous registration no longer carries over, so the restart
   waits for the camera's own drop into playback as intended.
