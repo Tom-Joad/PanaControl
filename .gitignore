@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# Claude Code's local settings: approved commands can hold tokens
+.claude/settings.local.json
