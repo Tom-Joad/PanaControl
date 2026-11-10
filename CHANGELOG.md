@@ -5,7 +5,7 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.3.0] - 2026-11-10
 
 ### Added
 - **`/api/status` answers `HEAD` and reports the version.** Scripts and
@@ -260,6 +260,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.3.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.1.2...v3.2.0
 [3.1.2]: https://github.com/Tom-Joad/PanaControl/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/Tom-Joad/PanaControl/compare/v3.1.0...v3.1.1
