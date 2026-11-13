@@ -396,12 +396,9 @@ class Controller:
         repeated one counts as a loss. Without a session, it is an ordinary
         failed attempt.
         """
-        if not self.camera.connected:
-            self._fail(exc)
-            self._stop.wait(self._backoff())
-            return
-        self._bad_replies += 1
-        if self._bad_replies >= self.BAD_REPLY_LIMIT:
+        if self.camera.connected:
+            self._bad_replies += 1
+        if not self.camera.connected or self._bad_replies >= self.BAD_REPLY_LIMIT:
             self._bad_replies = 0
             self._fail(exc)
             self._stop.wait(self._backoff())
@@ -741,7 +738,8 @@ class Controller:
         self.camera.rec_stop()
 
     def _begin_stream(self) -> None:
-        # The receiver must listen before the camera starts sending.
+        # The receiver must listen before the camera starts sending. The
+        # cooldown starts now, so a failed bind is retried only after it.
         self._last_restart = time.monotonic()
         try:
             self.stream.start()
