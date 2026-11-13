@@ -116,6 +116,16 @@ echo "== web UI"
 [[ $(request /static/app/manifest.json) == 200 ]] || fail "the web app manifest is not served"
 [[ $(request /static/app/keep-awake.mp4) == 200 ]] || fail "the keep-awake video is not served"
 [[ $(request /api/status) == 200 ]] || fail "/api/status does not answer 200"
+# A camera that is not there is not a fault of the app: still healthy.
+[[ $(request /api/health) == 200 ]] || fail "/api/health does not answer 200"
+CACHE=$(docker exec -i "$NAME" python3 - <<'PY'
+import os, urllib.request
+base = f"http://127.0.0.1:{os.environ['LUMIX_WEB_PORT']}"
+for path in ("/", "/static/css/tokens.css"):
+    print(urllib.request.urlopen(base + path, timeout=5).headers.get("Cache-Control"))
+PY
+)
+[[ $CACHE == $'no-cache\nno-cache' ]] || fail "the page and /static are not revalidated: '$CACHE'"
 
 echo "== commands from other web sites are refused"
 [[ $(post /api/rec/start '' 'Sec-Fetch-Site:cross-site') == 403 ]] || fail "cross-site POST not refused"

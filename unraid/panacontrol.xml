@@ -21,7 +21,9 @@
     container must be in the same subnet: with a router or a separate VLAN in between, the
     control works but no picture arrives. Don't use bridge with port mapping: a frame of
     about 23 KB travels as one UDP datagram in 17 IP fragments, and Docker's NAT drops whole
-    frames when one fragment is lost. Host networking works too.
+    frames when one fragment is lost. Host networking works too. If your server has no br0,
+    Unraid shows the network as "none" and the container has no network: pick your main
+    interface's network by hand, with a fixed IP in the camera's subnet.
 
     The web interface is on port 8080 of the container's address. It has no login: whoever
     reaches it controls the camera. For access from outside, put a reverse proxy with
@@ -34,7 +36,7 @@
     never as root. Upgrading from 1.x: remove --read-only, --cap-drop ALL and the --cap-add
     options from Extra Parameters, or the container won't start.
   </Overview>
-  <Category>MediaApp:Photos Tools:Utilities</Category>
+  <Category>MediaApp:Photos Tools:</Category>
   <ExtraParams>--stop-timeout 30 --security-opt no-new-privileges</ExtraParams>
   <PostArgs/>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>

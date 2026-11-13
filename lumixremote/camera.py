@@ -39,6 +39,14 @@ class NotConnected(LumixError):
     """Command sent without a valid session."""
 
 
+class BadReply(LumixError):
+    """The camera answered, but not with a usable reply (broken XML, HTTP error).
+
+    Not a refusal and not a lost network: one garbled reply says nothing about
+    the session, so the keeper does not drop it over a single one.
+    """
+
+
 class NotReachable(LumixError):
     """The camera could not be reached: timeout or aborted connection.
 
@@ -90,6 +98,20 @@ def _hexencode(value: str) -> str:
     return value.encode("utf-8").hex()
 
 
+def _describe(params: dict[str, str]) -> str:
+    """The request as shown in errors, which reach the UI and the log.
+
+    The registration carries the camera's UDN and the device name (hex
+    encoded, but trivially reversible); they stay out of every message.
+    """
+    shown = dict(params)
+    if shown.get("mode") == "accctrl" or shown.get("type") == "device_name":
+        for key in ("value", "value2"):
+            if key in shown:
+                shown[key] = "<redacted>"
+    return str(shown)
+
+
 def _looks_like_session(value: str) -> bool:
     """Does the field look like a session ID?
 
@@ -136,9 +158,10 @@ class Camera:
             try:
                 r = self._client.get(url, params=params, headers=self._headers())
             except httpx.HTTPError as exc:
-                raise NotReachable(f"camera not reachable for {params}: {exc}") from exc
+                raise NotReachable(
+                    f"camera not reachable for {_describe(params)}: {exc}") from exc
         if r.status_code != 200:
-            raise LumixError(f"HTTP {r.status_code} for {params}")
+            raise BadReply(f"HTTP {r.status_code} for {_describe(params)}")
         return r.text.strip()
 
     def _get_xml(self, **params: str) -> ET.Element:
@@ -147,10 +170,10 @@ class Camera:
         try:
             root = ET.fromstring(text)
         except ET.ParseError as exc:
-            raise LumixError(f"unreadable reply to {params}: {text!r}") from exc
+            raise BadReply(f"unreadable reply to {_describe(params)}: {text[:80]!r}") from exc
         result = root.findtext("result", default="")
         if result != "ok":
-            raise LumixError(f"camera refused {params}: {result!r}", reply=result)
+            raise LumixError(f"camera refused {_describe(params)}: {result!r}", reply=result)
         return root
 
     # ------------------------------------------------------------------ #

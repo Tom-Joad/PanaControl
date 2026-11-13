@@ -72,7 +72,8 @@ def _measure(cam: Camera, ip: str, port: int, duration: float,
 
     print("\n[2/5] Registering (confirm the prompt on the camera's display if shown)")
     session = cam.connect()
-    print(f"      Session ID : {session or '(none)'}")
+    # The ID itself stays out of the output: reports get pasted into issues.
+    print(f"      Session    : {'obtained' if session else '(none)'}")
 
     print("\n[3/5] Setting record mode and reading the state")
     try:
