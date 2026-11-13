@@ -15,6 +15,7 @@ Start:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ipaddress
 import logging
@@ -29,12 +30,12 @@ from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__, logging_setup
-from .camera import Camera, CameraState, LumixError, NotReachable
+from .camera import BadReply, Camera, CameraState, LumixError, NotReachable
 from .stream import LiveStream
 
 log = logging.getLogger("lumixremote.app")
@@ -76,21 +77,35 @@ class Config:
         path = path or pathlib.Path(os.environ.get("LUMIX_CONFIG", "config.toml"))
         data: dict = {}
         if path.exists():
-            with path.open("rb") as fh:
-                data = tomllib.load(fh)
+            try:
+                with path.open("rb") as fh:
+                    data = tomllib.load(fh)
+            except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as exc:
+                raise SystemExit(f"cannot read {path.name}: {exc}") from exc
         else:
             # Normal in the container, where the settings come from the
             # environment; "starting" stays the first line.
             log.debug("config_file_missing", extra={"path": str(path)})
 
-        camera = data.get("camera", {})
-        stream = data.get("stream", {})
-        web = data.get("web", {})
+        def section(name: str) -> dict:
+            value = data.get(name, {})
+            if not isinstance(value, dict):
+                raise SystemExit(f"[{name}] in the configuration must be a table, "
+                                 f"got {value!r}")
+            return value
+
+        camera, stream, web = section("camera"), section("stream"), section("web")
+
+        def text(env: str, table: dict, key: str, default: str) -> str:
+            value = os.environ.get(env, table.get(key, default))
+            if not isinstance(value, str):
+                raise SystemExit(f"{env} / {key} must be text, got {value!r}")
+            return value
 
         def port(env: str, value: object) -> int:
             raw = os.environ.get(env, value)
             try:
-                number = int(raw)
+                number = int(raw) if not isinstance(raw, bool) else 0
             except (TypeError, ValueError):
                 number = 0
             if not 1 <= number <= 65535:
@@ -111,12 +126,10 @@ class Config:
         allowed_hosts = tuple(name for name in map(host_name, hosts) if name)
 
         cfg = cls(
-            camera_ip=os.environ.get("LUMIX_CAMERA_IP", camera.get("ip", "")),
-            device_name=os.environ.get(
-                "LUMIX_DEVICE_NAME", camera.get("device_name", "lumix-remote")
-            ),
+            camera_ip=text("LUMIX_CAMERA_IP", camera, "ip", "").strip(),
+            device_name=text("LUMIX_DEVICE_NAME", camera, "device_name", "lumix-remote"),
             stream_port=port("LUMIX_STREAM_PORT", stream.get("port", 49199)),
-            web_host=os.environ.get("LUMIX_WEB_HOST", web.get("host", "127.0.0.1")),
+            web_host=text("LUMIX_WEB_HOST", web, "host", "127.0.0.1"),
             web_port=port("LUMIX_WEB_PORT", web.get("port", 8080)),
             allowed_hosts=allowed_hosts,
         )
@@ -223,6 +236,7 @@ class Controller:
     RETRY_DELAY = 5.0       # wait after a failed connection attempt
     CHURN_WINDOW = 45.0     # sessions held this briefly count as a dispute
     CHURN_ALARM = 2         # warn after this many in a row
+    BAD_REPLY_LIMIT = 3     # unreadable replies in a row before the session is dropped
     RETRY_MAX = 60.0        # upper limit of the growing wait
     # Minimum gap between two startstream calls, and the grace period after
     # the first. Measured on the device: a second call three seconds after the
@@ -250,6 +264,11 @@ class Controller:
     # battery) and stays stopped. Only a recording that was running when the
     # session was lost is resumed, and only after the next registration.
     RESUME_WINDOW = 90.0
+    # A recording is resumed only if the camera was silent for less than this
+    # when it came back. After a longer outage (switched off during the
+    # recording, on again hours later) nobody expects a recording to start by
+    # itself.
+    RESUME_MAX_OUTAGE = 600.0
     RESUME_TRIES = 3        # per registration
     # After the recording has ended, the camera still drops into playback on
     # its own, seen 6 to 11 s after the registration. A video_recstart before
@@ -281,6 +300,9 @@ class Controller:
         self._registered_at = 0.0
         self._churn = 0
         self._unreachable_since: float | None = None
+        # When the camera last answered a state poll; None until the first.
+        self._last_seen: float | None = None
+        self._bad_replies = 0
         # Whether a recording should be running: set by a start through the
         # app or a recording seen on the camera, cleared by a stop through
         # the app or a recording that ended while the session held.
@@ -352,6 +374,8 @@ class Controller:
             except NotReachable as exc:
                 # Network briefly gone; the session stays.
                 self._endure(exc)
+            except BadReply as exc:
+                self._garbled(exc)
             except LumixError as exc:
                 # The camera answered and refused. That is different; only a
                 # fresh attempt helps.
@@ -363,6 +387,28 @@ class Controller:
                 # left alone, as with a dropout, so a recording isn't at risk.
                 log.exception("keeper_error")
                 self._stop.wait(self.RETRY_DELAY)
+
+    def _garbled(self, exc: BadReply) -> None:
+        """A reply that could not be read: tolerated a few times in a row.
+
+        One broken reply says nothing about the session, and dropping it
+        would end a running recording with the re-registration. Only a
+        repeated one counts as a loss. Without a session, it is an ordinary
+        failed attempt.
+        """
+        if not self.camera.connected:
+            self._fail(exc)
+            self._stop.wait(self._backoff())
+            return
+        self._bad_replies += 1
+        if self._bad_replies >= self.BAD_REPLY_LIMIT:
+            self._bad_replies = 0
+            self._fail(exc)
+            self._stop.wait(self._backoff())
+            return
+        log.warning("reply_unreadable", extra={
+            "count": self._bad_replies, "error": str(exc)})
+        self._stop.wait(self.TICK)
 
     def _endure(self, exc: NotReachable) -> None:
         """Sit out a dropout. The session is never given up over silence.
@@ -412,6 +458,7 @@ class Controller:
         self._resumes = 0
         self._first_poll = True
         log.info("registered")
+        self._drop_stale_resume()
 
         # A stream from a lost session keeps running on the camera and makes
         # the next startstream fail with err_busy; the log showed this after
@@ -420,6 +467,21 @@ class Controller:
         self._read_capabilities()
         self._settle()
         self._last_poll = 0.0  # forces an immediate state poll
+
+    def _drop_stale_resume(self) -> None:
+        """Forget a recording that was lost too long ago to be resumed.
+
+        The gap is measured from the last state the camera sent, so it covers
+        a dropout of the network, a refused session and the time the camera
+        needed to answer again alike.
+        """
+        if self._last_seen is None or not (self._rec_wanted or self._resume_armed):
+            return
+        outage = time.monotonic() - self._last_seen
+        if outage > self.RESUME_MAX_OUTAGE:
+            log.info("resume_dropped_long_outage", extra={"outage_s": round(outage)})
+            self._rec_wanted = False
+            self._resume_armed = False
 
     def _settle(self) -> None:
         """Wait until the camera has finished its automatic mode change.
@@ -436,6 +498,7 @@ class Controller:
 
         while time.monotonic() < deadline and not self._stop.is_set():
             state = self.camera.get_state()
+            self._last_seen = time.monotonic()
             mode = state.raw.get("cammode", "rec")
             now = time.monotonic()
 
@@ -503,6 +566,10 @@ class Controller:
         if self._cammode != "rec":
             return
 
+        if self._streaming and not self.stream.running:
+            # The receiver died (logged there): start it and the stream again.
+            self._streaming = False
+
         if not self._streaming:
             # The first attempt keeps the minimum gap too; otherwise a refused
             # startstream would knock again every second.
@@ -553,6 +620,8 @@ class Controller:
         state = self.camera.get_state()
         # It answered, so a running dropout is over.
         self._unreachable_since = None
+        self._last_seen = time.monotonic()
+        self._bad_replies = 0
         # If a firmware reports no cammode, assume it is ready to record.
         mode = state.raw.get("cammode", "rec")
         self._set(state=state, cammode=mode)
@@ -673,7 +742,13 @@ class Controller:
 
     def _begin_stream(self) -> None:
         # The receiver must listen before the camera starts sending.
-        self.stream.start()
+        self._last_restart = time.monotonic()
+        try:
+            self.stream.start()
+        except OSError:
+            # Logged by the receiver and shown by /api/health; the next
+            # attempt comes after RESTART_COOLDOWN, e.g. once the port is free.
+            return
         time.sleep(0.3)
         self._last_restart = time.monotonic()
         try:
@@ -794,6 +869,8 @@ class Controller:
             "unreachable": self._unreachable_since is not None,
             "restarts": self._restarts,
             "stream_port": self.cfg.stream_port,
+            # Empty while the UDP receiver is fine.
+            "stream_error": self.stream.error,
         }
 
 
@@ -855,7 +932,8 @@ class SecurityHeaders:
     A plain ASGI middleware: Starlette's BaseHTTPMiddleware would get in the
     way of the endless MJPEG response. No sniffing a reply into HTML, no
     framing by other pages (a hidden Record button under someone else's
-    page), no paths in the Referer, and nothing cached from /api/.
+    page), no paths in the Referer, nothing cached from /api/, and the page and
+    its files revalidated.
     """
 
     HEADERS = [
@@ -879,13 +957,20 @@ class SecurityHeaders:
             await send({"type": "http.response.body",
                         "body": b"unknown host name: add it to LUMIX_ALLOWED_HOSTS\n"})
             return
-        api = scope["path"].startswith("/api/")
+        path = scope["path"]
+        api = path.startswith("/api/")
+        # The page and its files are revalidated on every load (an ETag makes
+        # that a cheap 304), so a home-screen app picks up an update at once
+        # instead of running an old index.html against new assets.
+        revalidate = path == "/" or path.startswith("/static/")
 
         async def send_with_headers(message) -> None:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", [])) + self.HEADERS
                 if api:
                     headers.append((b"cache-control", b"no-store"))
+                elif revalidate:
+                    headers.append((b"cache-control", b"no-cache"))
                 message["headers"] = headers
             await send(message)
 
@@ -948,6 +1033,18 @@ async def status(request: Request) -> dict:
     return _controller(request).snapshot()
 
 
+@app.api_route("/api/health", methods=["GET", "HEAD"])
+async def health(request: Request) -> JSONResponse:
+    """For the container's health check: 503 while the UDP receiver is broken.
+
+    A camera that is off or unreachable is not a fault of the app and stays
+    healthy; a live view that can never arrive is.
+    """
+    error = _controller(request).stream.error
+    return JSONResponse({"ok": not error, "error": error},
+                        status_code=503 if error else 200)
+
+
 @app.post("/api/af", **COMMAND)
 async def autofocus(request: Request) -> dict:
     return await _command(_controller(request).camera.autofocus)
@@ -986,24 +1083,44 @@ async def set_iso(request: Request) -> dict:
 async def stream_mjpeg(request: Request) -> StreamingResponse:
     """Hand the received frames on as multipart/x-mixed-replace.
 
-    Waits on the receiver's condition variable instead of polling, so an idle
-    viewer costs nothing. Several browsers may watch at the same time.
+    The receiver pushes each frame to the viewers' event loop, so an idle
+    viewer costs nothing and holds no worker thread: any number of browsers
+    may watch while commands still get through.
     """
     controller = _controller(request)
+    loop = asyncio.get_running_loop()
+    # One slot: a slow viewer skips frames instead of lagging behind.
+    latest: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
+
+    def hand_over(frame: bytes) -> None:
+        if latest.full():
+            latest.get_nowait()
+        latest.put_nowait(frame)
+
+    def listener(frame: bytes) -> None:
+        # Called in the receiver's thread; the queue belongs to the loop.
+        # The loop is gone when the server shuts down.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(hand_over, frame)
 
     async def frames() -> AsyncIterator[bytes]:
-        while not await request.is_disconnected():
-            frame = await run_in_threadpool(controller.stream.wait_for_frame, 5.0)
-            if frame is None:
-                # The stream stays open: the interface reports the stall via
-                # /api/status, and the picture returns by itself once the
-                # watchdog has kicked the stream.
-                continue
-            yield (
-                f"--{BOUNDARY}\r\n"
-                f"Content-Type: image/jpeg\r\n"
-                f"Content-Length: {len(frame)}\r\n\r\n"
-            ).encode("ascii") + frame + b"\r\n"
+        controller.stream.add_listener(listener)
+        try:
+            while not await request.is_disconnected():
+                try:
+                    frame = await asyncio.wait_for(latest.get(), 5.0)
+                except asyncio.TimeoutError:
+                    # The stream stays open: the interface reports the stall
+                    # via /api/status, and the picture returns by itself once
+                    # the watchdog has kicked the stream.
+                    continue
+                yield (
+                    f"--{BOUNDARY}\r\n"
+                    f"Content-Type: image/jpeg\r\n"
+                    f"Content-Length: {len(frame)}\r\n\r\n"
+                ).encode("ascii") + frame + b"\r\n"
+        finally:
+            controller.stream.remove_listener(listener)
 
     return StreamingResponse(
         frames(),

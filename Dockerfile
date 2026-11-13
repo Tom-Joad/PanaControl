@@ -58,7 +58,7 @@ EXPOSE 49199/udp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python3 -c "import urllib.request,os,sys; \
-sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('LUMIX_WEB_PORT','8080')+'/api/status', timeout=4).status==200 else 1)"
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('LUMIX_WEB_PORT','8080')+'/api/health', timeout=4).status==200 else 1)"
 
 # The entrypoint stays the base image's /init (s6-overlay), which must run as
 # PID 1: don't add `--init` or `--user` to `docker run`.

@@ -182,6 +182,7 @@ the camera.
 | `GET /` | Interface |
 | `GET /stream.mjpg` | Live view as `multipart/x-mixed-replace` |
 | `GET /api/status` | Connection state, battery, recording, frame rate |
+| `GET /api/health` | `200`, or `503` while the UDP receiver for the live view is broken (the container's health check) |
 | `POST /api/af` | Autofocus |
 | `POST /api/rec/start` | Start recording |
 | `POST /api/rec/stop` | Stop recording |
@@ -227,7 +228,10 @@ The log starts with the TomJoad Images banner and the user IDs. The app
 then writes one JSON object per line (`ts`, `level`, `event` and the
 details); the first one is `"event":"starting"` with the version and the
 settings that matter. The state
-is at `http://<address>:8080/api/status`. More symptoms and causes are in
+is at `http://<address>:8080/api/status`. `docker ps` shows the container
+as unhealthy if the live view's UDP port can't be opened (taken by another
+program) or the receiver stopped; the log says why (`udp_bind_failed`,
+`udp_receiver_failed`). More symptoms and causes are in
 [`unraid/README-UNRAID.md`](unraid/README-UNRAID.md#when-something-is-stuck).
 
 Verify the signature:

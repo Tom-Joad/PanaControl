@@ -5,6 +5,53 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Fixed
+- **A recording is no longer started by itself after a long outage.** The
+  automatic restart is armed only if the camera was silent for less than ten
+  minutes. A camera that was switched off during a recording and on again
+  hours later stays idle. A recording that the camera reported as stopped
+  while it answered (for example stopped in the LUMIX app) is not started
+  again either.
+- **One unreadable reply no longer costs the session.** A broken or
+  non-200 reply to the state poll is tolerated up to three times in a row;
+  before, one such reply dropped the session, and the re-registration ended a
+  running recording.
+- **Many open live views no longer block the buttons.** Frames are handed to
+  the viewers by the server's event loop instead of one worker thread per
+  viewer, so with 40 or more browsers open the stop button and the page still
+  answer.
+- **A broken live-view receiver is reported.** An occupied UDP port or a
+  socket that stops is logged (`udp_bind_failed`, `udp_receiver_failed`),
+  shown as `stream_error` in `/api/status`, retried at the next stream start,
+  and the container's health check (now `/api/health`) turns unhealthy.
+- **The camera's identifier stays out of errors.** Error messages (shown in
+  the interface and written to the log) no longer contain the registration
+  values (the camera's UDN and the device name); `probe` no longer prints the
+  session ID.
+- **Invalid settings stop the start with `config_invalid`** instead of a
+  traceback: a `config.toml` that is not valid TOML, a section that is not a
+  table, and values of the wrong type.
+- **A home-screen app picks up an update.** The page and `/static` files are
+  sent with `Cache-Control: no-cache` (revalidated with their ETag).
+
+### Docs
+- The 3.3.0 entry "A recording you stop on purpose stays stopped" is
+  imprecise: registering alone does not arm the restart. It is armed by a
+  recording that was running when the session was lost, or one that is seen
+  running at the first state poll after a registration, and then applies
+  only within 90 seconds of that registration.
+- `unraid/README-UNRAID.md` describes installing the template by copying it to
+  `/boot/config/plugins/dockerMan/templates-user/` (Unraid no longer has
+  template repositories), lists `LUMIX_ALLOWED_HOSTS`, warns that a missing
+  `br0` makes Unraid show the network as "none", and no longer shows an old
+  start line. The template category is now a valid one.
+
+### Tests
+- Tests for the controller loop, the live view, `Controller.stop()`,
+  `set_iso`, the settings and the health route.
+
 ## [3.3.0] - 2026-11-10
 
 ### Added

@@ -16,13 +16,19 @@ front.
 ## Creating the container
 
 The easy way is Community Applications: search for **PanaControl** under
-`Apps` and install it. Without Community Applications, add
-`https://github.com/Tom-Joad/unraid-templates` under `Docker` ->
-`Add Container` -> `Template repositories`, then pick `PanaControl` from
-the `Template` list. Set:
+`Apps` and install it. Without Community Applications, copy
+[`panacontrol.xml`](panacontrol.xml) to
+`/boot/config/plugins/dockerMan/templates-user/` on the flash drive. Then, in
+the Unraid web UI, go to **Docker** -> **Add Container** and pick
+`panacontrol` from the template dropdown. Set:
 
 - **Network Type** `br0` (preset) and a **Fixed IP address** in the camera's
-  subnet. The interface is then at `http://<that address>:8080/`.
+  subnet. The interface is then at `http://<that address>:8080/`. If your
+  server has no `br0` (the network list shows no such entry, for example
+  with bridging turned off), Unraid shows the network as `none` and the
+  container has no network at all: pick the network of your main interface
+  by hand (with a custom network on that interface, an own address as
+  below) or use `host`.
 - **LUMIX_CAMERA_IP**, the camera's address.
 - `PUID=99` and `PGID=100` are preset. Unraid sets `TZ` from its own time zone (**Settings** → **Date and Time**),
   so the log time stamps follow the server.
@@ -68,6 +74,7 @@ app writes no files and needs no path.
 | `LUMIX_STREAM_PORT` | `49199` | UDP port for the live view |
 | `LUMIX_WEB_HOST` | `0.0.0.0` | Where the app listens in the container; leave it |
 | `LUMIX_WEB_PORT` | `8080` | Port of the interface |
+| `LUMIX_ALLOWED_HOSTS` | -- | Host names the interface answers to besides IP addresses, single words (`tower`) and `*.local`, e.g. a reverse proxy's name; comma-separated. Any other name is refused with `403` |
 | `LUMIX_LOG_LEVEL` | `INFO` | `DEBUG` for troubleshooting |
 
 ## Network: an own address, not bridge with port mapping
@@ -166,7 +173,8 @@ the container from starting. In the container, under `Edit`:
    `--stop-timeout 30 --security-opt no-new-privileges`.
 2. Optionally add the variable `UMASK` (`002`).
 3. `Apply`. The log now starts with the TomJoad Images banner, and the first
-   line of the app names the version (`PanaControl 2.0.0 starting`).
+   line of the app is the JSON object with `"event":"starting"`, which names
+   the version.
 
 Settings, ports and the network stay as they are. Copying the new template
 and recreating the container from it does the same.

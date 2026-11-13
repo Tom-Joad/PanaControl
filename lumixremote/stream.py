@@ -13,6 +13,7 @@ import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -114,8 +115,11 @@ class LiveStream:
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
+        # Why the receiver is not listening although it should: the port is
+        # taken, or the socket broke. Empty while all is well.
+        self.error = ""
         self._frame_lock = threading.Lock()
-        self._frame_event = threading.Condition(self._frame_lock)
+        self._listeners: list[Callable[[bytes], None]] = []
         self._latest: bytes | None = None
         # The header before the JPEG carries exposure values that can't be
         # queried anywhere else, so it is kept instead of thrown away.
@@ -139,6 +143,7 @@ class LiveStream:
         self._resolve_source()
         if self._running.is_set():
             return
+        self._release_socket()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -146,26 +151,49 @@ class LiveStream:
         except OSError:
             # macOS caps it via kern.ipc.maxsockbuf; not critical.
             log.debug("rcvbuf_not_set")
-        sock.bind(("0.0.0.0", self.port))
+        try:
+            sock.bind(("0.0.0.0", self.port))
+        except OSError as exc:
+            sock.close()
+            self.error = f"cannot listen on UDP port {self.port}: {exc.strerror or exc}"
+            log.error("udp_bind_failed", extra={"port": self.port, "error": self.error})
+            raise
         sock.settimeout(0.5)
         self._sock = sock
+        self.error = ""
         self._running.set()
         self.stats = StreamStats()
         self._thread = threading.Thread(target=self._loop, name="lumix-udp", daemon=True)
         self._thread.start()
         log.info("udp_listening", extra={"port": self.port})
 
-    def stop(self) -> None:
-        self._running.clear()
-        if self._thread:
-            self._thread.join(timeout=2.0)
+    @property
+    def running(self) -> bool:
+        """Is the receiver thread listening?"""
+        return self._running.is_set()
+
+    def _release_socket(self) -> None:
         if self._sock:
             self._sock.close()
             self._sock = None
 
+    def stop(self) -> None:
+        self._running.clear()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+        self._release_socket()
+
     # ------------------------------------------------------------------ #
 
     def _loop(self) -> None:
+        try:
+            self._receive()
+        except Exception as exc:
+            self.error = f"UDP receiver stopped: {type(exc).__name__}"
+            log.exception("udp_receiver_failed", extra={"port": self.port})
+            self._running.clear()
+
+    def _receive(self) -> None:
         assert self._sock is not None
         last_seen: float | None = None
 
@@ -174,7 +202,14 @@ class LiveStream:
                 datagram, addr = self._sock.recvfrom(MAX_DATAGRAM)
             except socket.timeout:
                 continue
-            except OSError:
+            except OSError as exc:
+                if self._running.is_set():
+                    # Not a stop: the socket broke. Say so, and let the
+                    # keeper start the receiver again.
+                    self.error = f"UDP receiver stopped: {exc.strerror or exc}"
+                    log.error("udp_receiver_failed", extra={"port": self.port,
+                                                            "error": self.error})
+                    self._running.clear()
                 break
             if self.source and self._source_ip is None and (
                     time.monotonic() - self._source_tried >= SOURCE_RETRY):
@@ -218,12 +253,37 @@ class LiveStream:
                     self.stats.dimensions[dims] += 1
             self.stats.last_frame_at = now
 
-            with self._frame_event:
-                self._latest = frame
-                self._latest_header = datagram[:offset]
-                self._frame_event.notify_all()
+            self.publish(frame, datagram[:offset])
 
     # ------------------------------------------------------------------ #
+
+    def publish(self, frame: bytes, header: bytes) -> None:
+        """Keep the frame as the latest and hand it to every listener."""
+        with self._frame_lock:
+            self._latest = frame
+            self._latest_header = header
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            try:
+                listener(frame)
+            except Exception:
+                # One broken viewer must not end the receiver.
+                log.exception("stream_listener_failed")
+
+    def add_listener(self, listener: Callable[[bytes], None]) -> None:
+        """Call `listener(frame)` from the receiver thread for every frame.
+
+        It must not block: the MJPEG output only hands the frame over to its
+        event loop. No thread waits per viewer, so any number of viewers
+        leaves the server's worker threads to the commands.
+        """
+        with self._frame_lock:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[bytes], None]) -> None:
+        with self._frame_lock:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
 
     @property
     def latest_frame(self) -> bytes | None:
@@ -235,13 +295,6 @@ class LiveStream:
         """Proprietary header of the most recently received datagram."""
         with self._frame_lock:
             return self._latest_header
-
-    def wait_for_frame(self, timeout: float = 5.0) -> bytes | None:
-        """Blocks until the next frame. For the MJPEG output."""
-        with self._frame_event:
-            if self._frame_event.wait(timeout):
-                return self._latest
-        return None
 
     @property
     def stalled(self) -> bool:

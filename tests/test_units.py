@@ -345,6 +345,7 @@ def keeper(monkeypatch):
         controller._follow_recording(recording, mode)
         return controller.camera.calls
 
+    poll.clock = clock
     return controller, poll
 
 
@@ -540,3 +541,564 @@ def test_status_answers_head_and_names_the_version():
         assert head.status_code == 200
     finally:
         del app.state.controller
+
+
+# ------------------------------------------- outage limit for the resume ---
+
+def _lose_and_register_again(controller, poll, outage: float):
+    """A recording runs, the camera falls silent for `outage` seconds, the
+    session is refused afterwards and the app registers again."""
+    camera = controller.camera = PollingCamera()
+    controller._resume_armed = False
+    camera.replies = [{"rec": "on"}]
+    controller._read_state()
+    poll.clock["now"] += outage
+    controller._fail(LumixError("session refused"))
+    _register(controller)
+    return camera
+
+
+def test_a_recording_is_resumed_after_a_short_outage(keeper):
+    controller, poll = keeper
+    camera = _lose_and_register_again(controller, poll, outage=120)
+    poll(0.5, recording=True)
+    poll(5, recording=False)
+    poll(5, recording=False)
+    assert poll(30, recording=False) == ["rec_start"]
+
+
+def test_a_recording_is_not_started_after_a_long_outage(keeper):
+    # The camera was switched off while recording and on again hours later:
+    # nobody wants a recording to start by itself then.
+    controller, poll = keeper
+    outage = appmod.Controller.RESUME_MAX_OUTAGE + 60
+    _lose_and_register_again(controller, poll, outage=outage)
+    assert controller._resume_armed is False
+    for _ in range(12):
+        assert poll(5, recording=False) == []
+    assert controller._rec_wanted is False
+
+
+def test_a_recording_stopped_while_the_camera_answered_is_not_started(keeper):
+    # Stopped through the LUMIX app: the next poll shows 'off' while the
+    # session still holds, then the session is taken over.
+    controller, poll = keeper
+    camera = controller.camera = PollingCamera()
+    controller._resume_armed = False
+    camera.replies = [{"rec": "on"}, {"rec": "off"}]
+    controller._read_state()
+    poll.clock["now"] += 5
+    controller._read_state()
+    controller._fail(LumixError("session refused"))
+    _register(controller)
+    for _ in range(12):
+        assert poll(5, recording=False) == []
+    assert camera.calls == []
+
+
+# ----------------------------------------------------- many live viewers ---
+
+class StreamOnlyController:
+    """Just enough of a Controller for the stream and a stop command."""
+
+    def __init__(self):
+        self.stream = LiveStream(port=0)
+        self.stopped = 0
+
+    def rec_stop(self):
+        self.stopped += 1
+
+
+@pytest.fixture
+def live_server():
+    """The app on a real socket, with a stand-in controller (no lifespan)."""
+    import socket
+    import threading
+    import uvicorn
+
+    controller = StreamOnlyController()
+    appmod.app.state.controller = controller
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(
+        appmod.app, host="127.0.0.1", port=port, log_level="error",
+        lifespan="off", timeout_graceful_shutdown=1))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert server.started
+    yield controller, port
+    server.should_exit = True
+    thread.join(timeout=5)
+    del appmod.app.state.controller
+
+
+def _open_viewers(port: int, count: int):
+    import socket
+    viewers = []
+    for _ in range(count):
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"GET /stream.mjpg HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        viewers.append(sock)
+    return viewers
+
+
+def _post(port: int, path: str, timeout: float) -> int:
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("POST", path)
+        return conn.getresponse().status
+    finally:
+        conn.close()
+
+
+def test_many_viewers_without_frames_do_not_block_commands(live_server):
+    # 60 viewers waiting for a first frame used to take every worker thread
+    # (one per viewer); the stop command and the page then waited.
+    controller, port = live_server
+    viewers = _open_viewers(port, 60)
+    try:
+        time.sleep(0.5)
+        started = time.monotonic()
+        assert _post(port, "/api/rec/stop", timeout=5) == 200
+        assert time.monotonic() - started < 2
+        assert controller.stopped == 1
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/")
+        assert conn.getresponse().status == 200
+    finally:
+        for sock in viewers:
+            sock.close()
+
+
+def test_every_viewer_gets_the_frames(live_server):
+    controller, port = live_server
+    viewers = _open_viewers(port, 3)
+    try:
+        time.sleep(0.5)
+        controller.stream.publish(jpeg(64, 48), b"")
+        for sock in viewers:
+            sock.settimeout(5)
+            data = b""
+            while b"\xff\xd9" not in data:
+                data += sock.recv(65536)
+            assert b"multipart/x-mixed-replace" in data
+            assert b"Content-Type: image/jpeg" in data
+    finally:
+        for sock in viewers:
+            sock.close()
+
+
+# ----------------------------------------------- no environment in errors ---
+
+@pytest.mark.parametrize("body, status", [(None, 200), ("<r><result>err_busy</result></r>", 200),
+                                          ("not xml", 200), ("", 503)])
+def test_the_registration_values_stay_out_of_errors(monkeypatch, body, status):
+    camera = _camera_with_reply(monkeypatch, body, status)
+    with pytest.raises(LumixError) as caught:
+        camera._get_xml(mode="accctrl", type="req_acc_e", value="c0ffee11", value2="beef2222")
+    assert "c0ffee11" not in str(caught.value)
+    assert "beef2222" not in str(caught.value)
+    assert "req_acc_e" in str(caught.value)
+
+
+def test_the_device_name_stays_out_of_errors(monkeypatch):
+    camera = _camera_with_reply(monkeypatch, None)
+    with pytest.raises(LumixError) as caught:
+        camera._get_xml(mode="setsetting", type="device_name", value="Personal Name")
+    assert "Personal Name" not in str(caught.value)
+
+
+def test_other_requests_stay_readable_in_errors(monkeypatch):
+    camera = _camera_with_reply(monkeypatch, None)
+    with pytest.raises(LumixError) as caught:
+        camera.set_setting("iso", "800")
+    assert "800" in str(caught.value)
+
+
+# ---------------------------------------------------------- bad settings ---
+
+def _load(monkeypatch, tmp_path, text: str | None, **env):
+    for name in ("LUMIX_CAMERA_IP", "LUMIX_DEVICE_NAME", "LUMIX_WEB_HOST", "LUMIX_STREAM_PORT",
+                 "LUMIX_WEB_PORT", "LUMIX_ALLOWED_HOSTS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    path = tmp_path / "config.toml"
+    if text is not None:
+        path.write_text(text, encoding="utf-8")
+    return appmod.Config.load(path)
+
+
+@pytest.mark.parametrize("text", [
+    "[camera\nip = ",                       # not TOML
+    'camera = "192.0.2.10"',                # a table was expected
+    "[camera]\nip = 5",                     # text was expected
+    '[camera]\nip = "192.0.2.10"\ndevice_name = 7',
+    '[camera]\nip = "192.0.2.10"\n[web]\nhost = ["a"]',
+    '[camera]\nip = "192.0.2.10"\n[stream]\nport = true',
+])
+def test_invalid_settings_stop_the_start_without_a_traceback(monkeypatch, tmp_path, text):
+    with pytest.raises(SystemExit) as caught:
+        _load(monkeypatch, tmp_path, text)
+    assert isinstance(caught.value.code, str) and caught.value.code
+
+
+def test_invalid_settings_are_logged_as_config_invalid(monkeypatch, tmp_path, capsys):
+    import logging
+    root = logging.getLogger()
+    saved = root.handlers[:], root.level
+    monkeypatch.setattr(appmod.logging_setup, "configure", lambda level: logging.basicConfig(
+        handlers=[logging.StreamHandler(__import__("sys").stderr)], force=True))
+    monkeypatch.setenv("LUMIX_CONFIG", str(tmp_path / "config.toml"))
+    (tmp_path / "config.toml").write_text("[camera\n", encoding="utf-8")
+    monkeypatch.delenv("LUMIX_CAMERA_IP", raising=False)
+    try:
+        assert appmod.main() == 1
+    finally:
+        root.handlers[:], root.level = saved
+    assert "config_invalid" in capsys.readouterr().err
+
+
+def test_valid_settings_still_load(monkeypatch, tmp_path):
+    cfg = _load(monkeypatch, tmp_path, '[camera]\nip = "192.0.2.10"\n[web]\nhost = "0.0.0.0"')
+    assert (cfg.camera_ip, cfg.web_host) == ("192.0.2.10", "0.0.0.0")
+
+
+# ------------------------------------------------------------ UDP health ---
+
+def test_an_occupied_stream_port_is_reported(caplog):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as taken:
+        # Without SO_REUSEADDR on this socket, the receiver cannot share it.
+        taken.bind(("0.0.0.0", 0))
+        stream = LiveStream(port=taken.getsockname()[1])
+        with pytest.raises(OSError):
+            stream.start()
+    assert str(stream.port) in stream.error
+    assert not stream.running
+
+
+def test_a_dying_receiver_says_so_and_can_start_again():
+    import socket
+    stream = LiveStream(port=0)
+    # A free port number for the receiver.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as free:
+        free.bind(("0.0.0.0", 0))
+        stream.port = free.getsockname()[1]
+    stream.start()
+    try:
+        assert stream.running and stream.error == ""
+        stream._sock.close()                      # the socket breaks under it
+        deadline = time.monotonic() + 3
+        while stream.running and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not stream.running
+        assert "UDP receiver stopped" in stream.error
+        stream.start()                             # the keeper starts it again
+        assert stream.running and stream.error == ""
+    finally:
+        stream.stop()
+
+
+def test_health_follows_the_receiver():
+    controller = StreamOnlyController()
+    appmod.app.state.controller = controller
+    try:
+        ok = client.get("/api/health")
+        assert ok.status_code == 200 and ok.json()["ok"] is True
+        controller.stream.error = "cannot listen on UDP port 49199"
+        bad = client.get("/api/health")
+        assert bad.status_code == 503 and "49199" in bad.json()["error"]
+        assert client.head("/api/health").status_code == 503
+    finally:
+        del appmod.app.state.controller
+
+
+def test_health_is_not_ready_without_a_controller():
+    assert client.get("/api/health").status_code == 503
+
+
+# ---------------------------------------------------------------- caching ---
+
+def test_the_page_and_its_files_are_revalidated():
+    for path in ("/", "/static/css/tokens.css", "/static/app/manifest.json"):
+        assert client.get(path).headers["cache-control"] == "no-cache", path
+    assert client.get("/static/css/tokens.css").headers.get("etag")
+    assert client.get("/api/status").headers["cache-control"] == "no-store"
+
+
+# ---------------------------------------------------- the controller loop ---
+
+class ScriptCamera:
+    """A camera that answers getstate from a script: a CameraState, or an
+    exception to raise. Everything else works at once."""
+
+    class Info:
+        model_number = "DC-TEST"
+        firmware = "0.0"
+
+    def __init__(self, script=()):
+        self.script = list(script)
+        self.session_id = None
+        self.info = self.Info()
+        self.connects = 0
+        self.polls = 0
+        self.calls: list[str] = []
+        self.settings = {"iso": "200", "focusmode": "AFS"}
+        self.closed = False
+
+    @property
+    def connected(self):
+        return self.session_id is not None
+
+    def describe(self):
+        return self.info
+
+    def connect(self):
+        self.connects += 1
+        self.session_id = f"0123456789abcd{self.connects:02d}"
+        return self.session_id
+
+    def get_state(self):
+        self.polls += 1
+        step = self.script.pop(0) if self.script else CameraState(raw={"cammode": "rec"})
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    def get_info(self, name):
+        return ""
+
+    def get_setting(self, name):
+        return self.settings.get(name, "")
+
+    def set_setting(self, name, value):
+        self.settings[name] = value
+
+    def set_rec_mode(self):
+        self.calls.append("set_rec_mode")
+
+    def start_stream(self, port):
+        self.calls.append("start_stream")
+
+    def stop_stream(self):
+        self.calls.append("stop_stream")
+
+    def rec_start(self):
+        self.calls.append("rec_start")
+
+    def rec_stop(self):
+        self.calls.append("rec_stop")
+
+    def close(self):
+        self.closed = True
+
+
+class QuietStream:
+    """Stands in for the UDP receiver: no socket, no frames."""
+
+    error = ""
+    running = True
+    stalled = False
+    latest_header = None
+
+    class stats:
+        fps = 0.0
+        frames = 0
+
+    def start(self): pass
+    def stop(self): pass
+
+
+@pytest.fixture
+def running_controller(monkeypatch):
+    """A controller whose loop runs fast against a ScriptCamera."""
+    for name, value in (("TICK", 0.01), ("POLL_INTERVAL", 0.0), ("RETRY_DELAY", 0.01),
+                        ("RETRY_MAX", 0.02), ("SETTLE_POLL", 0.01), ("SETTLE_STABLE", 0.02),
+                        ("RESTART_COOLDOWN", 0.0)):
+        monkeypatch.setattr(appmod.Controller, name, value)
+    monkeypatch.setattr(appmod.time, "sleep", lambda _: None)
+    started: list[appmod.Controller] = []
+
+    def make(script=()):
+        controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+        controller.camera = ScriptCamera(script)
+        controller.stream = QuietStream()
+        started.append(controller)
+        controller.start()
+        return controller
+
+    yield make
+    for controller in started:
+        controller._stop.set()
+        controller._thread.join(timeout=3)
+
+
+def _until(condition, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
+def test_the_loop_registers_and_goes_online(running_controller):
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    assert controller.camera.connects == 1
+    assert "start_stream" in controller.camera.calls
+    assert controller.snapshot()["iso"] == "200"
+
+
+def test_a_dropout_keeps_the_session(running_controller):
+    from lumixremote.camera import NotReachable
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    session = controller.camera.session_id
+    controller.camera.script = [NotReachable("gone")] * 5
+    assert _until(lambda: controller.snapshot()["unreachable"])
+    assert _until(lambda: not controller.snapshot()["unreachable"])
+    assert controller.camera.session_id == session
+    assert controller.camera.connects == 1
+
+
+def test_a_refused_session_registers_again(running_controller):
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    controller.camera.script = [LumixError("refused", reply="err_critical")]
+    assert _until(lambda: controller.camera.connects == 2)
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+
+
+def test_one_unreadable_reply_does_not_cost_the_session(running_controller):
+    # A garbled getstate reply used to drop the session, and the
+    # re-registration ends a running recording.
+    from lumixremote.camera import BadReply
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    polls = controller.camera.polls
+    controller.camera.script = [BadReply("unreadable")]
+    assert _until(lambda: controller.camera.polls > polls + 3)
+    assert controller.camera.connects == 1
+    assert controller.snapshot()["status"] == "online"
+
+
+def test_repeated_unreadable_replies_drop_the_session(running_controller):
+    from lumixremote.camera import BadReply
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    controller.camera.script = [BadReply("unreadable")] * appmod.Controller.BAD_REPLY_LIMIT
+    assert _until(lambda: controller.camera.connects == 2)
+
+
+def test_unreadable_replies_in_a_row_are_counted_from_zero_after_a_good_one(running_controller):
+    from lumixremote.camera import BadReply
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    limit = appmod.Controller.BAD_REPLY_LIMIT
+    for _ in range(3):
+        polls = controller.camera.polls
+        controller.camera.script = [BadReply("unreadable")] * (limit - 1)
+        assert _until(lambda: controller.camera.polls > polls + limit + 1)
+    assert controller.camera.connects == 1
+
+
+def test_an_unexpected_error_does_not_end_the_loop(running_controller):
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    controller.camera.script = [RuntimeError("bug")]
+    polls = controller.camera.polls
+    assert _until(lambda: controller.camera.polls > polls + 3)
+    assert controller._thread.is_alive()
+    assert controller.camera.connects == 1
+
+
+def test_a_dead_receiver_is_started_again(running_controller):
+    controller = running_controller()
+    assert _until(lambda: controller.snapshot()["status"] == "online")
+    starts = controller.camera.calls.count("start_stream")
+    controller.stream.running = False
+    assert _until(lambda: controller.camera.calls.count("start_stream") > starts)
+
+
+# ------------------------------------------------------------ the shutdown ---
+
+def test_stop_releases_the_session():
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    controller.camera = ScriptCamera()
+    controller.stream = QuietStream()
+    controller.camera.session_id = "0123456789abcdef"
+    controller.stop()
+    assert controller.camera.calls == ["stop_stream"]
+    assert controller.camera.closed
+
+
+def test_stop_releases_a_session_marked_as_lost():
+    # After an err_busy the session is dropped; the camera still holds it.
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    controller.camera = ScriptCamera()
+    controller.stream = QuietStream()
+    controller._stale_session = "0123456789abcdef"
+    controller.stop()
+    assert controller.camera.calls == ["stop_stream"]
+    assert controller.camera.session_id == "0123456789abcdef"
+
+
+def test_stop_without_any_session_sends_nothing():
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    controller.camera = ScriptCamera()
+    controller.stream = QuietStream()
+    controller.stop()
+    assert controller.camera.calls == []
+    assert controller.camera.closed
+
+
+# ---------------------------------------------------------------- set_iso ---
+
+@pytest.fixture
+def iso_controller(monkeypatch):
+    monkeypatch.setattr(appmod.time, "sleep", lambda _: None)
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    controller.camera = ScriptCamera()
+    controller._iso_values = ["auto", "200", "800"]
+    return controller
+
+
+def test_set_iso_returns_what_the_camera_took(iso_controller):
+    # Measured: 400 was acknowledged and came back as 800.
+    camera = iso_controller.camera
+    camera.set_setting = lambda name, value: camera.settings.update({name: "800"})
+    assert iso_controller.set_iso("200") == "800"
+    assert iso_controller.snapshot()["iso"] == "800"
+
+
+def test_set_iso_refuses_a_value_the_camera_does_not_offer(iso_controller):
+    with pytest.raises(LumixError):
+        iso_controller.set_iso("12345")
+    assert iso_controller.camera.settings["iso"] == "200"
+
+
+def test_set_iso_without_a_known_list_passes_the_value_on(iso_controller):
+    iso_controller._iso_values = []
+    assert iso_controller.set_iso("3200") == "3200"
+
+
+def test_the_iso_route_answers_with_the_adopted_value():
+    class IsoController:
+        def set_iso(self, value):
+            if value == "bad":
+                raise LumixError("not available")
+            return "800"
+
+    appmod.app.state.controller = IsoController()
+    try:
+        ok = client.post("/api/iso", json={"value": "400"})
+        assert ok.status_code == 200 and ok.json() == {"ok": True, "iso": "800"}
+        assert client.post("/api/iso", json={"value": "bad"}).status_code == 409
+    finally:
+        del appmod.app.state.controller
