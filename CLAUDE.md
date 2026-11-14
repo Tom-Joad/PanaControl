@@ -44,6 +44,9 @@ and updates the document; assumptions don't replace measurements.
 * Logging through the `logging` module, never `print` outside `probe.py`.
 * The interface follows the Tom Joad Media design (`static/css/tokens.css`,
   `base.css`, fonts served by the app itself, never from a CDN).
+  Deliberate exception (owner, 2026-11-14): recording is shown in `red`,
+  the REC label and the 3px frame around the live view, although status
+  colours are otherwise never red. Red means recording on every camera.
 
 ## Pitfalls that have cost time before
 
