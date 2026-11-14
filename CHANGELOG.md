@@ -5,6 +5,14 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Fixed
+- **The fps reading shows the current frame rate.** It was the average since
+  the receiver started, so every pause without frames (a camera dropout, a
+  mode change) pulled it down and it crept back up by 0.1 every half minute.
+  It is now measured over the last three seconds.
+
 ## [3.3.2] - 2026-11-14
 
 ### Fixed

@@ -22,6 +22,8 @@ EOI = b"\xff\xd9"       # End of Image
 MAX_DATAGRAM = 65535
 # Gap between two lookups of an unresolved camera name by the receiver.
 SOURCE_RETRY = 5.0
+# Span the displayed frame rate is measured over.
+FPS_WINDOW = 3.0
 
 # SOF markers that carry the image dimensions. C4/C8/CC are Huffman/arithmetic.
 SOF_MARKERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
@@ -79,6 +81,13 @@ class StreamStats:
     # The latest gaps only, and a count of all: the receiver runs for days.
     gaps: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=100))
     gap_count: int = 0
+    # Arrival times of the frames within FPS_WINDOW.
+    recent: deque[float] = field(default_factory=deque)
+
+    def mark_frame(self, now: float) -> None:
+        self.recent.append(now)
+        while now - self.recent[0] > FPS_WINDOW:
+            self.recent.popleft()
 
     @property
     def elapsed(self) -> float:
@@ -86,10 +95,21 @@ class StreamStats:
 
     @property
     def fps(self) -> float:
+        """Average since the first frame, pauses included."""
         if self.first_frame_at is None or self.last_frame_at is None:
             return 0.0
         span = self.last_frame_at - self.first_frame_at
         return (self.frames - 1) / span if span > 0 else 0.0
+
+    @property
+    def recent_fps(self) -> float:
+        """Rate over the last FPS_WINDOW seconds. The average since the first
+        frame kept every pause without frames and took minutes to recover."""
+        times = tuple(self.recent)
+        if len(times) < 2:
+            return 0.0
+        span = times[-1] - times[0]
+        return (len(times) - 1) / span if span > 0 else 0.0
 
     @property
     def avg_frame_size(self) -> float:
@@ -252,6 +272,7 @@ class LiveStream:
                 if dims:
                     self.stats.dimensions[dims] += 1
             self.stats.last_frame_at = now
+            self.stats.mark_frame(now)
 
             self.publish(frame, datagram[:offset])
 
