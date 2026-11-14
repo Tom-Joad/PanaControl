@@ -6,6 +6,7 @@ docs/protocol.md."""
 from __future__ import annotations
 
 import pathlib
+import re
 import time
 
 import pytest
@@ -175,6 +176,17 @@ def test_security_headers_and_no_api_pages():
 def test_the_interface_is_served():
     assert "PanaControl" in client.get("/").text
     assert pathlib.Path(appmod.STATIC_DIR, "css", "tokens.css").is_file()
+
+
+def test_every_font_the_stylesheet_names_is_served():
+    css = client.get("/static/css/tokens.css").text
+    fonts = re.findall(r'url\("(fonts/[^"]+)"\)', css)
+    # Latin and Latin Extended for both families.
+    assert len(fonts) == 4
+    for font in fonts:
+        r = client.get("/static/css/" + font)
+        assert r.status_code == 200, font
+        assert r.content[:4] == b"wOF2", font
 
 
 # -------------------------------------------------------------- logging ---

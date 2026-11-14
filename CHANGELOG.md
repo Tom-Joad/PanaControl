@@ -5,6 +5,21 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Fixed
+- **The top bar no longer starts a row indented.** Between about 760 and
+  960px wide the readings and buttons wrapped into a second row that began
+  up to 230px from the left edge. They move to the right only where the
+  whole bar fits on one line; narrower, every row starts at the left (#64).
+
+### Changed
+- The wordmark ends with the red full-stop, as in the other apps; the
+  readings and the REC label use the design's text styles (REC is a little
+  larger), and the full-screen icon has the design's 1.5px stroke (#65).
+- The fonts include Latin Extended, so names with Polish, Turkish or other
+  Latin letters keep the interface's typeface (#65).
+
 ## [3.3.1] - 2026-11-13
 
 ### Fixed
