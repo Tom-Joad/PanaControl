@@ -106,8 +106,8 @@
 
   .value,
   .field select {
-    font: var(--text-button);
-    font-size: 17px;
+    font: var(--text-body-on-ink);
+    font-weight: 800;
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
     color: var(--text-on-ink);
@@ -135,7 +135,13 @@
   .readings {
     display: flex;
     gap: var(--space-12);
-    margin-left: auto;
+  }
+
+  /* Readings and controls move to the right only where the whole bar fits
+     on one line (up to about 1360px with the longest state text). Narrower,
+     the bar wraps and every row starts at the left edge. */
+  @media (min-width: 1400px) {
+    .readings { margin-left: auto; }
   }
 
   /* ---- Controls ------------------------------------------------------ */
@@ -191,8 +197,9 @@
     padding: var(--space-6) var(--space-12);
     background: var(--red);
     color: var(--action-primary-fg);
-    font: var(--text-button);
-    font-size: 15px;
+    /* Readable from two metres. */
+    font: var(--text-body-on-ink);
+    font-weight: 800;
     letter-spacing: 0.2em;
   }
   main.recording #rec { display: block; }
@@ -306,7 +313,6 @@
 
   /* Narrow window: the controls take their own row and share it. */
   @media (max-width: 760px) {
-    .readings { margin-left: 0; }
     .actions { width: 100%; }
     .actions .btn { flex: 1; padding: 0 var(--space-6); }
   }
@@ -315,7 +321,7 @@
 <body>
 
 <header>
-  <span class="wordmark">PanaControl</span>
+  <span class="wordmark">PanaControl<span class="stop">.</span></span>
 
   <span class="link tracked"><span class="mark connect" id="mark"></span><span id="link">Connecting</span></span>
 
@@ -351,10 +357,10 @@
     <div class="detail" id="ov-detail"></div>
   </div>
   <button id="full" type="button" title="Full screen (V, or double-click the picture)" aria-label="Full screen">
-    <svg class="enter" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+    <svg class="enter" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
       <path d="M2 7V2h5M13 2h5v5M18 13v5h-5M7 18H2v-5"/>
     </svg>
-    <svg class="exit" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+    <svg class="exit" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
       <path d="M7 2v5H2M18 7h-5V2M13 18v-5h5M2 13h5v5"/>
     </svg>
   </button>
