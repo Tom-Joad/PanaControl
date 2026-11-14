@@ -116,6 +116,23 @@ def test_stream_stats_keep_a_sum_not_every_frame():
     assert StreamStats().avg_frame_size == 0
 
 
+def test_shown_frame_rate_forgets_a_pause():
+    stats = StreamStats()
+    assert stats.recent_fps == 0
+    stats.first_frame_at = 0.0
+    for i in range(300):                    # 10 s at 30 fps
+        stats.frames += 1
+        stats.last_frame_at = i / 30
+        stats.mark_frame(i / 30)
+    for i in range(300):                    # 40 s without frames, then 10 s more
+        stats.frames += 1
+        stats.last_frame_at = 50 + i / 30
+        stats.mark_frame(50 + i / 30)
+    assert round(stats.recent_fps, 1) == 30.0
+    assert stats.fps < 11                   # the average still carries the pause
+    assert len(stats.recent) <= 30 * 3 + 1
+
+
 # ------------------------------------------------------------- settings ---
 
 def test_config_takes_the_environment_first(monkeypatch, tmp_path):
@@ -921,7 +938,7 @@ class QuietStream:
     latest_header = None
 
     class stats:
-        fps = 0.0
+        recent_fps = 0.0
         frames = 0
 
     def start(self): pass

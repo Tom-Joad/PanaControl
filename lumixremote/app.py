@@ -859,7 +859,7 @@ class Controller:
             "video_remaining": state.video_remaining,
             "model": self.camera.info.model_number,
             "firmware": self.camera.info.firmware,
-            "fps": round(stats.fps, 1),
+            "fps": round(stats.recent_fps, 1),
             "frames": stats.frames,
             "stalled": self.stream.stalled,
             # During a dropout the interface's firewall hint would be wrong,
