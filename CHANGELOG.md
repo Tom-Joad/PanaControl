@@ -5,7 +5,7 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.3.3] - 2026-11-14
 
 ### Fixed
 - **The fps reading shows the current frame rate.** It was the average since
@@ -330,6 +330,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.3.3]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.2...v3.3.3
 [3.3.2]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.1...v3.3.2
 [3.3.1]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.2.0...v3.3.0
