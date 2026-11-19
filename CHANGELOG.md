@@ -5,6 +5,12 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [3.3.4] - 2026-11-19
+
+### Security
+- Security updates of the distribution packages, picked up by rebuilding the image:
+  - `libssl3` 3.5.9-r1 (CVE-2026-107496, CVE-2026-88822, CVE-2026-88823, CVE-2026-95691, CVE-2026-95692)
+
 ## [3.3.3] - 2026-11-14
 
 ### Fixed
@@ -330,6 +336,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.3.4]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.3...v3.3.4
 [3.3.3]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.2...v3.3.3
 [3.3.2]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.1...v3.3.2
 [3.3.1]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.0...v3.3.1
