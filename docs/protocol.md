@@ -12,6 +12,9 @@ The camera runs two services:
 | 60606 | UPnP/DLNA | Device description, media access |
 | 80 | `cam.cgi` | Control and stream control |
 
+Media access is not used so far. What the phone app does there is collected,
+unverified, in [`media-transfer.md`](media-transfer.md).
+
 Control commands are plain HTTP GETs with query parameters. The reply is
 usually XML of the form `<camrply><result>ok</result></camrply>`; on errors it
 says `err_busy`, `err_param` or similar.
