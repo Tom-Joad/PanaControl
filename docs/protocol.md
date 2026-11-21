@@ -13,7 +13,9 @@ The camera runs two services:
 | 80 | `cam.cgi` | Control and stream control |
 
 Media access is not used so far. What the phone app does there is collected,
-unverified, in [`media-transfer.md`](media-transfer.md).
+unverified, in [`media-transfer.md`](media-transfer.md); what else the app does
+differently (events, more state fields, the datagram layout) is in
+[`phone-app-notes.md`](phone-app-notes.md).
 
 Control commands are plain HTTP GETs with query parameters. The reply is
 usually XML of the form `<camrply><result>ok</result></camrply>`; on errors it
