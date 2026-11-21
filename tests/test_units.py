@@ -1131,3 +1131,85 @@ def test_the_iso_route_answers_with_the_adopted_value():
         assert client.post("/api/iso", json={"value": "bad"}).status_code == 409
     finally:
         del appmod.app.state.controller
+
+
+# ---------------------------------------------------------- mediaprobe ---
+
+from lumixremote import mediaprobe  # noqa: E402
+
+
+def test_browse_reply_is_read_with_its_escaped_listing():
+    didl = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        '<container id="01000000" parentID="0"><dc:title>100_PANA</dc:title></container>'
+        '<item id="01000001" parentID="0"><dc:title>P1000001</dc:title>'
+        "<dc:date>2026-01-02T03:04:05</dc:date>"
+        "<upnp:class>object.item.imageItem</upnp:class>"
+        "<res protocolInfo=\"http-get:*:image/jpeg:PANASONIC.COM_PN=CAM_TN\">"
+        "http://192.0.2.10:50001/DT1000001.JPG</res>"
+        "<res protocolInfo=\"http-get:*:image/jpeg:PANASONIC.COM_PN=CAM_ORG;"
+        "OriginalFileName='P1000001.JPG'\">http://192.0.2.10:50001/DO1000001.JPG</res>"
+        "</item></DIDL-Lite>"
+    )
+    escaped = didl.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    reply = (
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+        '<u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">'
+        f"<Result>{escaped}</Result><NumberReturned>2</NumberReturned>"
+        "<TotalMatches>7</TotalMatches></u:BrowseResponse></s:Body></s:Envelope>"
+    )
+    result = mediaprobe.parse_browse(reply)
+    assert (result.returned, result.total) == (2, 7)
+    folder, item = result.entries
+    assert folder.is_container and folder.title == "100_PANA"
+    assert item.date == "2026-01-02T03:04:05"
+    assert [r.kind for r in item.resources] == ["CAM_TN", "CAM_ORG"]
+    assert item.resources[1].filename == "P1000001.JPG"
+    assert item.resources[1].url.endswith("/DO1000001.JPG")
+
+
+def test_protocol_info_without_extras():
+    assert mediaprobe.parse_protocol_info("http-get:*:video/mp4:*") == ("video/mp4", "", "")
+    assert mediaprobe.parse_protocol_info("") == ("", "", "")
+
+
+def test_folders_come_from_the_capability_reply():
+    xml = (
+        "<camrply><result>ok</result><contents_action_info>"
+        '<media id="media_sd" type="sd" detail="sd">'
+        '<dir id="dir_id_sd_all" type="all" detail="pict" object_id="0"/>'
+        '<dir id="dir_id_sd_mp4_only" type="movie" detail="mp4" object_id="01020000"/>'
+        "</media></contents_action_info></camrply>"
+    )
+    folders = mediaprobe.parse_folders(xml)
+    assert [f["object_id"] for f in folders] == ["0", "01020000"]
+    assert folders[1]["media"] == "sd"
+    assert mediaprobe.parse_folders("not xml") == []
+
+
+def test_event_url_is_taken_from_the_connection_manager():
+    xml = (
+        '<root xmlns="urn:schemas-upnp-org:device-1-0"><device><serviceList>'
+        "<service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>"
+        "<eventSubURL>/Server0/CDS_event</eventSubURL></service>"
+        "<service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>"
+        "<eventSubURL>/Server0/CMS_event</eventSubURL></service>"
+        "</serviceList></device></root>"
+    )
+    base = "http://192.0.2.10:60606/Lumix/Server0/ddd"
+    assert mediaprobe.event_url(xml, base) == "http://192.0.2.10:60606/Server0/CMS_event"
+    assert mediaprobe.event_url("<root/>", base) is None
+
+
+def test_datagram_layout_compares_computed_and_found_jpeg_start():
+    info = b"\x00\x01" + b"\x00" * 242              # type 1, 244 bytes in all
+    head = bytearray(32)
+    head[0:2] = (32 + len(info) + 6).to_bytes(2, "big")
+    head[30:32] = len(info).to_bytes(2, "big")
+    layout = mediaprobe.datagram_layout(bytes(head) + info + b"\xff\xd8\xff\xe0\xff\xd9")
+    assert layout["computed_jpeg_at"] == layout["soi_at"] == 276
+    assert layout["matches"] and layout["info_type"] == 1
+    assert not mediaprobe.datagram_layout(b"\x00" * 40 + b"\xff\xd8\xff")["matches"]
+    assert not mediaprobe.datagram_layout(b"short")["matches"]
