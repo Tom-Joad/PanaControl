@@ -25,6 +25,7 @@ ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     LUMIX_WEB_HOST=0.0.0.0 \
     LUMIX_WEB_PORT=8080 \
     LUMIX_STREAM_PORT=49199 \
+    LUMIX_EVENT_PORT=49198 \
     LUMIX_DOWNLOAD_DIR=/downloads
 
 # /lsiopy is linuxserver.io's place for a Python venv and already on PATH.
@@ -58,6 +59,8 @@ VOLUME /downloads
 
 EXPOSE 8080/tcp
 EXPOSE 49199/udp
+# The camera reports the start and end of a recording here.
+EXPOSE 49198/tcp
 
 # No VOLUME: the app writes no files.
 

@@ -141,6 +141,11 @@ echo "== foreign host names are refused (DNS rebinding)"
 [[ $(post /api/af '' 'Host:tower:8080' 'Sec-Fetch-Site:same-origin') == 409 ]] \
     || fail "a command under a LAN host name was refused"
 
+echo "== the event port listens"
+docker exec "$NAME" python3 -c 'import os, socket; socket.create_connection(("127.0.0.1", int(os.environ["LUMIX_EVENT_PORT"])), 3)' \
+    || fail "nothing listens on LUMIX_EVENT_PORT"
+if in_log 'events_port_unusable'; then fail "the event port could not be opened"; fi
+
 echo "== the cards view"
 media() { # prints one field of /api/media
     docker exec -i "$NAME" python3 - "$1" <<'PY'

@@ -120,6 +120,18 @@ download folder, **Download all** everything that is not there yet.
 * Verified on the DC-GH6 with MOV clips. Photos and RAW files go the same
   way but were not on the cards when this was measured.
 
+### Recording
+
+While a recording runs, the time next to **REC** is the camera's own
+counter. If a recording ends without **Stop** being pressed here, the
+picture carries a note with the reason and the time until it is confirmed
+with **OK** or the next recording starts: stopped on the camera, card full,
+card too slow, camera too hot, write error. The camera reports that itself,
+to the TCP port `LUMIX_EVENT_PORT`. Verified on the DC-GH6 for a stop on the
+camera; the other reasons are the ones the phone app knows. If the port
+can't be reached, everything works as before and the note only says that
+the recording ended.
+
 ## Parameters
 
 | Parameter | Default | Meaning |
@@ -127,6 +139,7 @@ download folder, **Download all** everything that is not there yet.
 | `--network` | -- | An own address on the LAN (macvlan/ipvlan, `br0` on Unraid) or `host`; see [Network](#network) |
 | `-p 8080:8080` | -- | Web interface (only with port mapping) |
 | `-p 49199:49199/udp` | -- | Live view; the same number on both sides (only with port mapping) |
+| `-p 49198:49198/tcp` | -- | The camera's events; the same number on both sides (only with port mapping, together with `LUMIX_EVENT_HOST`) |
 | `-e PUID` | `911` | User the app runs as (Unraid: `99`), not `0` |
 | `-e PGID` | `911` | Group the app runs as (Unraid: `100`), not `0` |
 | `-v /downloads` | -- | Folder for the files downloaded from the cards. Without it the download is switched off |
@@ -135,6 +148,8 @@ download folder, **Download all** everything that is not there yet.
 | `-e LUMIX_CAMERA_IP` | -- (required) | The camera's address |
 | `-e LUMIX_DEVICE_NAME` | `lumix-remote` | Name shown on the camera's display during registration |
 | `-e LUMIX_STREAM_PORT` | `49199` | UDP port for the live view |
+| `-e LUMIX_EVENT_PORT` | `49198` | TCP port the camera reports its events to; `0` switches them off |
+| `-e LUMIX_EVENT_HOST` | -- | Address the camera reports to, if not the container's own: with port mapping, the host's address |
 | `-e LUMIX_WEB_HOST` | `0.0.0.0` in the image | Where the interface listens |
 | `-e LUMIX_WEB_PORT` | `8080` | Port of the interface |
 | `-e LUMIX_LOG_LEVEL` | `INFO` | `DEBUG` for troubleshooting |
@@ -162,6 +177,12 @@ control keeps working.
 So give the container its own address on the LAN (macvlan or ipvlan; on
 Unraid `br0` with a fixed IP) or use `network_mode: host`. If you must use
 port mapping, the UDP port needs the same number on both sides.
+
+The camera's events come the other way round: the camera connects to the
+app, on TCP port `LUMIX_EVENT_PORT`. With an own address or host networking
+that just works. With port mapping, publish the port with the same number
+and set `LUMIX_EVENT_HOST` to the host's address on the LAN, because the
+app would otherwise name the container's internal address.
 
 Docker Desktop on macOS runs the host namespace in a VM: the published UDP
 port works there, `network_mode: host` doesn't. Day to day on a Mac, start
@@ -206,7 +227,7 @@ the camera.
 |---|---|
 | `GET /` | Interface |
 | `GET /stream.mjpg` | Live view as `multipart/x-mixed-replace` |
-| `GET /api/status` | Connection state, battery, recording, frame rate |
+| `GET /api/status` | Connection state, battery, recording with its time and the reason for its end, frame rate |
 | `GET /api/health` | `200`, or `503` while the UDP receiver for the live view is broken (the container's health check) |
 | `POST /api/af` | Autofocus |
 | `POST /api/rec/start` | Start recording |
@@ -354,6 +375,7 @@ camera; then start a recording on the camera, which the run stops itself.
 | `lumixremote/stream.py` | UDP receiver, JPEG extraction, statistics |
 | `lumixremote/app.py` | Connection keeper, routes, MJPEG output |
 | `lumixremote/media.py` | Listing the cards, download queue with resume |
+| `lumixremote/events.py` | Subscription to the camera's events (recording started, ended, why) |
 | `lumixremote/static/` | Interface without a build step, stylesheets and fonts; `app/` holds the home-screen manifest, icons and the keep-awake video |
 | `lumixremote/probe.py` | Measuring run and results |
 | `lumixremote/mediaprobe.py` | Test of listing, download, events and state |

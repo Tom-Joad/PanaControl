@@ -204,6 +204,39 @@
     letter-spacing: 0.2em;
   }
   main.recording #rec { display: block; }
+  #rec-time {
+    margin-left: var(--space-10);
+    letter-spacing: 0.06em;
+    font-variant-numeric: tabular-nums;
+  }
+  #rec-time:empty { display: none; }
+
+  /* A recording ended without a Stop from here: stays until acknowledged
+     or until the next recording starts. */
+  #notice {
+    position: absolute;
+    top: var(--space-14);
+    left: 50%;
+    z-index: 2;
+    transform: translateX(-50%);
+    display: none;
+    align-items: center;
+    gap: var(--space-14);
+    max-width: calc(100% - 2 * var(--space-14));
+    padding: var(--space-10) var(--space-14);
+    background: var(--surface-ink-raised);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+    border-top: var(--stroke-accent) solid var(--status-warning);
+    color: var(--text-on-ink);
+    font: var(--text-meta);
+  }
+  #notice.show { display: flex; }
+  #notice .tracked { color: var(--text-on-ink-faint); white-space: nowrap; }
+  #notice .btn {
+    min-height: 44px;
+    padding: 0 var(--space-14);
+    touch-action: manipulation;
+  }
 
   /* Plain words instead of a frozen picture. */
   #overlay {
@@ -484,7 +517,7 @@
 
 <main id="stage">
   <img id="view" alt="Live view">
-  <div id="rec">REC</div>
+  <div id="rec">REC<span id="rec-time"></span></div>
   <div id="overlay">
     <div class="title" id="ov-title">No live view</div>
     <div class="hint"  id="ov-hint"></div>
@@ -503,6 +536,11 @@
     <div id="media-total"><span id="media-total-text"></span><div class="bar"><i id="media-total-bar"></i></div></div>
     <ul id="media-list"></ul>
   </section>
+  <div id="notice" role="status">
+    <span class="tracked">Recording ended</span>
+    <span id="notice-text"></span>
+    <button class="btn btn--on-ink" id="notice-close" type="button">OK</button>
+  </div>
   <button id="full" type="button" title="Full screen (V, or double-click the picture)" aria-label="Full screen">
     <svg class="enter" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
       <path d="M2 7V2h5M13 2h5v5M18 13v5h-5M7 18H2v-5"/>
@@ -584,6 +622,7 @@ function render(s, transportError) {
     el("iso").disabled = true;
     el("aperture").textContent = "--";
     stage.classList.remove("recording");
+    el("notice").classList.remove("show");
     setMedia(false);
     setButtons(false, false);
     overlay(true, "Control unreachable",
@@ -608,6 +647,8 @@ function render(s, transportError) {
   el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
 
   stage.classList.toggle("recording", !!s.recording);
+  el("rec-time").textContent = s.recording && s.rec_seconds != null ? fmtClock(s.rec_seconds) : "";
+  renderNotice(s);
   setMedia(!!s.media);
   // Stop needs a session, not record mode: a recording the camera reports
   // outside 'rec' can still be stopped.
@@ -744,6 +785,35 @@ function fmtBatt(v) {
   if (!v || v === "unknown") return "--";
   return String(v).replace(/_/g, " ");
 }
+
+function fmtClock(seconds) {
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+}
+
+/* ---- A recording that ended without a Stop from here ---------------- */
+// The reason comes from the camera. Acknowledged per browser, so a tablet
+// on the tripod and a phone in the pocket each get to see it.
+
+let noticeSeen = 0;
+try { noticeSeen = Number(localStorage.getItem("noticeSeen")) || 0; } catch (e) { /* private mode */ }
+
+function renderNotice(s) {
+  const end = s.rec_end;
+  const show = !!end && !s.recording && end.at > noticeSeen;
+  el("notice").classList.toggle("show", show);
+  if (!show) return;
+  const at = new Date(end.at * 1000);
+  el("notice-text").textContent = end.text + " · "
+    + String(at.getHours()).padStart(2, "0") + ":" + String(at.getMinutes()).padStart(2, "0");
+  el("notice").dataset.at = end.at;
+}
+
+el("notice-close").addEventListener("click", () => {
+  noticeSeen = Number(el("notice").dataset.at) || Date.now() / 1000;
+  try { localStorage.setItem("noticeSeen", String(noticeSeen)); } catch (e) { /* not kept */ }
+  el("notice").classList.remove("show");
+});
 
 function fmtRemaining(v) {
   const n = parseInt(v, 10);
@@ -1055,7 +1125,7 @@ el("full").addEventListener("click", (e) => {
 // hand: Safari on the iPhone does not reliably send dblclick for taps.
 let lastTap = { time: 0, x: 0, y: 0 };
 stage.addEventListener("pointerup", (ev) => {
-  if (ev.target.closest("#full") || mediaOpen) return;
+  if (ev.target.closest("#full") || ev.target.closest("#notice") || mediaOpen) return;
   const near = Math.abs(ev.clientX - lastTap.x) < 40 && Math.abs(ev.clientY - lastTap.y) < 40;
   if (ev.timeStamp - lastTap.time < 350 && near) {
     lastTap = { time: 0, x: 0, y: 0 };

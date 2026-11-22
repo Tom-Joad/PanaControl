@@ -38,6 +38,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import __version__, logging_setup
 from .camera import BadReply, Camera, CameraState, LumixError, NotReachable
+from .events import EventSubscriber
 from .media import MediaManager
 from .stream import LiveStream
 
@@ -76,6 +77,11 @@ class Config:
     allowed_hosts: tuple[str, ...] = ()
     # Where files from the camera's cards are saved; empty switches that off.
     download_dir: str = ""
+    # TCP port the camera reports its events to; 0 switches them off.
+    event_port: int = 49198
+    # Address the camera reports to, when it is not this machine's own
+    # (Docker with port mapping: the host's address).
+    event_host: str = ""
 
     @classmethod
     def load(cls, path: pathlib.Path | None = None) -> "Config":
@@ -108,14 +114,16 @@ class Config:
                 raise SystemExit(f"{env} / {key} must be text, got {value!r}")
             return value
 
-        def port(env: str, value: object) -> int:
+        def port(env: str, value: object, allow_zero: bool = False) -> int:
             raw = os.environ.get(env, value)
             try:
-                number = int(raw) if not isinstance(raw, bool) else 0
+                number = int(raw) if not isinstance(raw, bool) else -1
             except (TypeError, ValueError):
-                number = 0
-            if not 1 <= number <= 65535:
-                raise SystemExit(f"{env} must be a port number from 1 to 65535, got {raw!r}")
+                number = -1
+            if not (0 if allow_zero else 1) <= number <= 65535:
+                lowest = "0 (off) or 1" if allow_zero else "1"
+                raise SystemExit(
+                    f"{env} must be a port number from {lowest} to 65535, got {raw!r}")
             return number
 
         if "LUMIX_ALLOWED_HOSTS" in os.environ:
@@ -139,6 +147,9 @@ class Config:
             web_port=port("LUMIX_WEB_PORT", web.get("port", 8080)),
             allowed_hosts=allowed_hosts,
             download_dir=text("LUMIX_DOWNLOAD_DIR", media, "download_dir", "").strip(),
+            event_port=port("LUMIX_EVENT_PORT", section("events").get("port", 49198),
+                            allow_zero=True),
+            event_host=text("LUMIX_EVENT_HOST", section("events"), "host", "").strip(),
         )
         if not cfg.camera_ip:
             raise SystemExit(
@@ -283,6 +294,19 @@ class Controller:
     # for recmode; if no drop comes, it goes ahead after this long in 'rec'.
     RESUME_NO_DROP = 20.0
 
+    # Why a recording ended, as the camera reports it in an event. 'done' is
+    # the answer to a stop by command and needs no words.
+    REC_END_REASONS = {
+        "err_UsrStp": "Stopped on the camera",
+        "err_SDfull": "The card is full",
+        "err_MemFull": "The memory is full",
+        "err_SpdInsuf": "The card is too slow",
+        "err_Tempa": "The camera is too hot",
+        "err_wr": "Write error on the card",
+        "err_UpLimit": "The recording limit was reached",
+        "err_CrFold": "No folder could be created on the card",
+    }
+
     # The media view needs playback. Gap between two playmode attempts.
     PLAYMODE_RETRY = 8.0
 
@@ -337,6 +361,11 @@ class Controller:
         self._focusmode = ""
         self._iso_values: list[str] = []
         self._lens_anchor = b""
+        # The last end of a recording that was not asked for here, for the
+        # interface: {"code", "text", "at"}; None after the next start.
+        self._rec_end: dict | None = None
+        self.events = EventSubscriber(cfg.camera_ip, cfg.event_port, self.on_event,
+                                      host=cfg.event_host)
         # The media view is open: the camera stays in playback, no live view
         # is requested and no recording is started.
         self._media = False
@@ -352,6 +381,30 @@ class Controller:
             target=self._run, name="lumix-controller", daemon=True
         )
         self._thread.start()
+        self.events.start()
+
+    def on_event(self, group: str, value: str) -> None:
+        """A report from the camera; called in the event listener's thread.
+
+        Events only add knowledge: why a recording ended, and that the state
+        is worth reading now instead of at the next poll. What is recording
+        and what gets resumed is still decided from the state query alone.
+        """
+        if group == "VRec":
+            if value == "start":
+                with self._lock:
+                    self._rec_end = None
+            elif value != "done":
+                with self._lock:
+                    self._rec_end = {
+                        "code": value,
+                        "text": self.REC_END_REASONS.get(
+                            value, f"The camera ended the recording ({value})"),
+                        "at": time.time(),
+                    }
+                log.warning("recording_ended_by_camera", extra={"reason": value})
+        # Read the state right away, not up to a poll interval later.
+        self._last_poll = 0.0
 
     def stop(self) -> None:
         """Ordered shutdown. Must run on every path that ends the process.
@@ -360,6 +413,7 @@ class Controller:
         answers every later command with err_busy until it is power cycled.
         """
         self._stop.set()
+        self.events.stop()
         if self._thread:
             self._thread.join(timeout=3.0)
         # A session marked as lost is released too. Seen on the device: after
@@ -774,6 +828,11 @@ class Controller:
 
         first_poll, self._first_poll = self._first_poll, False
         if recording:
+            # A new recording: the note about the last end is over. A note
+            # that just came in belongs to a poll that was still under way.
+            with self._lock:
+                if self._rec_end and time.time() - self._rec_end["at"] > 3.0:
+                    self._rec_end = None
             self._rec_wanted = True
             self._rec_off_since = None
             if first_poll:
@@ -794,6 +853,11 @@ class Controller:
             self._resume_armed = False
             self._rec_off_since = None
             log.info("recording_ended")
+            with self._lock:
+                if self._rec_end is None:
+                    # No event said why (the event port may be blocked).
+                    self._rec_end = {"code": "", "at": time.time(),
+                                     "text": "The recording ended, not through this app"}
             return
 
         # recmode is sent by _read_state. 'rec' has to hold for a moment after
@@ -818,6 +882,8 @@ class Controller:
         if self._media:
             raise LumixError("The cards are open: close them before recording")
         self.camera.rec_start()
+        with self._lock:
+            self._rec_end = None
         self._rec_wanted = True
         self._resume_armed = False
 
@@ -926,6 +992,18 @@ class Controller:
 
     # ------------------------------------------------------------------ #
 
+    def _rec_seconds(self, state: CameraState) -> int | None:
+        if not state.recording:
+            return None
+        try:
+            counted = int(state.raw.get("progress_time", ""))
+        except ValueError:
+            return None
+        age = time.monotonic() - self._last_seen if self._last_seen else 0.0
+        # While the camera is out of reach the recording goes on; the counter
+        # is carried on rather than frozen at the last answer.
+        return counted + max(int(age), 0)
+
     def snapshot(self) -> dict:
         """Current view of the world, safe to serialise at any time."""
         with self._lock:
@@ -946,6 +1024,11 @@ class Controller:
             # can therefore be read, but not set.
             "aperture": aperture_from_header(self.stream.latest_header or b"", anchor),
             "recording": state.recording,
+            # Seconds of the running recording, from the camera's own counter
+            # plus the time since it was read.
+            "rec_seconds": self._rec_seconds(state),
+            "rec_end": self._rec_end,
+            "events": self.events.subscribed,
             "battery": state.battery,
             "remaining_shots": state.remaining_shots,
             "video_remaining": state.video_remaining,
@@ -1318,7 +1401,7 @@ def main() -> int:
         "version": __version__, "camera": cfg.camera_ip,
         "device_name": cfg.device_name, "stream_port": cfg.stream_port,
         "web": f"http://{cfg.web_host}:{cfg.web_port}", "log_level": level,
-        "download_dir": cfg.download_dir or "-",
+        "download_dir": cfg.download_dir or "-", "event_port": cfg.event_port,
     })
     # The MJPEG stream never ends by itself. Without a deadline, uvicorn would
     # wait for every watching browser on shutdown, and a SIGKILL after that

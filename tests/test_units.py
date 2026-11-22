@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+import socket
+import threading
 import time
 
 import pytest
@@ -1542,3 +1544,129 @@ def test_the_focus_position_is_read_from_the_reply():
     assert appprobe.focus_position("ok,512,1023,0,0") == 512
     assert appprobe.focus_position("err_param") is None
     assert appprobe.focus_position("ok") is None
+
+
+# -------------------------------------------------------------- events ---
+
+from lumixremote import events as eventsmod  # noqa: E402
+
+NOTIFY_STOPPED = (
+    '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property>'
+    "<X_Panasonic_Cam_VRec>err_UsrStp</X_Panasonic_Cam_VRec></e:property></e:propertyset>"
+)
+
+
+def test_a_notify_body_gives_its_properties():
+    assert eventsmod.parse_notify(NOTIFY_STOPPED) == {"X_Panasonic_Cam_VRec": "err_UsrStp"}
+    assert eventsmod.parse_notify("not xml") == {}
+
+
+class FakeEventCamera:
+    """The camera's event service: grants, renews and forgets subscriptions."""
+
+    def __init__(self):
+        self.requests: list[tuple[str, dict]] = []
+        self.known = True
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ddd"):
+            return httpx.Response(200, text=(
+                '<root xmlns="urn:schemas-upnp-org:device-1-0"><device><serviceList><service>'
+                "<serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>"
+                "<eventSubURL>/Server0/CMS_event</eventSubURL></service></serviceList>"
+                "</device></root>"))
+        self.requests.append((request.method, dict(request.headers)))
+        if request.method == "SUBSCRIBE" and "sid" in request.headers and not self.known:
+            return httpx.Response(412)
+        return httpx.Response(200, headers={"SID": "uuid:1", "TIMEOUT": "Second-300"})
+
+
+def _subscriber(fake, seen=None):
+    return eventsmod.EventSubscriber(
+        "127.0.0.1", 49198, lambda group, value: (seen or []).append((group, value)),
+        transport=httpx.MockTransport(fake))
+
+
+def test_the_subscription_names_a_callback_and_is_renewed_by_its_id():
+    fake = FakeEventCamera()
+    subscriber = _subscriber(fake)
+    assert subscriber._subscribe() and subscriber.subscribed
+    method, headers = fake.requests[0]
+    assert method == "SUBSCRIBE" and headers["nt"] == "upnp:event"
+    assert headers["callback"] == "<http://127.0.0.1:49198/Camera/event>"
+
+    assert subscriber._renew()
+    assert fake.requests[1][1]["sid"] == "uuid:1" and "callback" not in fake.requests[1][1]
+
+
+def test_a_forgotten_subscription_is_made_again():
+    # After the camera was switched off and on, a renewal gets 412.
+    fake = FakeEventCamera()
+    subscriber = _subscriber(fake)
+    subscriber._subscribe()
+    fake.known = False
+    assert subscriber._renew()
+    assert "callback" in fake.requests[-1][1]
+
+
+def test_only_the_camera_may_report_events():
+    seen: list = []
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    subscriber = eventsmod.EventSubscriber("127.0.0.1", port, lambda g, v: seen.append((g, v)),
+                                           transport=httpx.MockTransport(FakeEventCamera()))
+    server = subscriber._listen()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{port}/Camera/event"
+        assert httpx.request("NOTIFY", url, content=NOTIFY_STOPPED).status_code == 200
+        assert seen == [("VRec", "err_UsrStp")]
+        subscriber.camera_ip = "192.0.2.10"     # now the sender is a stranger
+        assert httpx.request("NOTIFY", url, content=NOTIFY_STOPPED).status_code == 403
+        assert len(seen) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_stop_on_the_camera_is_named_until_the_next_recording(viewer):
+    controller, camera, clock = viewer
+    controller.on_event("VRec", "start")
+    assert controller._rec_end is None
+    controller.on_event("VRec", "err_UsrStp")
+    assert controller._rec_end["text"] == "Stopped on the camera"
+    assert controller._last_poll == 0.0     # the state is read right away
+
+    controller.on_event("VRec", "err_Unknown")
+    assert "err_Unknown" in controller._rec_end["text"]
+    controller.on_event("VRec", "start")
+    assert controller._rec_end is None
+
+
+def test_a_stop_through_the_app_needs_no_note(viewer):
+    controller, _, _ = viewer
+    controller.on_event("VRec", "start")
+    controller.on_event("VRec", "done")
+    assert controller._rec_end is None
+
+
+def test_the_recording_time_is_the_cameras_counter_carried_on(viewer):
+    controller, camera, clock = viewer
+    state = CameraState(raw={"rec": "on", "progress_time": "40"})
+    controller._last_seen = clock["now"]
+    assert controller._rec_seconds(state) == 40
+    clock["now"] += 3
+    assert controller._rec_seconds(state) == 43
+    assert controller._rec_seconds(CameraState(raw={"rec": "off", "progress_time": "0"})) is None
+    assert controller._rec_seconds(CameraState(raw={"rec": "on"})) is None
+
+
+def test_the_event_port_may_be_switched_off(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMIX_CAMERA_IP", "192.0.2.10")
+    monkeypatch.setenv("LUMIX_EVENT_PORT", "0")
+    assert appmod.Config.load(tmp_path / "none.toml").event_port == 0
+    monkeypatch.setenv("LUMIX_EVENT_PORT", "70000")
+    with pytest.raises(SystemExit, match="LUMIX_EVENT_PORT"):
+        appmod.Config.load(tmp_path / "none.toml")

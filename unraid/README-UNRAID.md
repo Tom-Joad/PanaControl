@@ -81,6 +81,7 @@ folder is mapped.
 | `LUMIX_CAMERA_IP` | -- | The camera's address, required |
 | `LUMIX_DEVICE_NAME` | `lumix-remote` | Name shown on the camera's display during registration |
 | `LUMIX_STREAM_PORT` | `49199` | UDP port for the live view |
+| `LUMIX_EVENT_PORT` | `49198` | TCP port the camera reports its events to (recording started or ended, and why); `0` switches them off |
 | `LUMIX_WEB_HOST` | `0.0.0.0` | Where the app listens in the container; leave it |
 | `LUMIX_WEB_PORT` | `8080` | Port of the interface |
 | `LUMIX_ALLOWED_HOSTS` | -- | Host names the interface answers to besides IP addresses, single words (`tower`) and `*.local`, e.g. a reverse proxy's name; comma-separated. Any other name is refused with `403` |
@@ -101,7 +102,8 @@ Without NAT, the same stream ran for seven minutes without a single gap.
 
 With `br0` and a fixed IP, the container has its own address on the LAN and
 there is no translation at all. No port mappings are needed: the interface
-is at `LUMIX_WEB_PORT` of that address, the live view at `LUMIX_STREAM_PORT`.
+is at `LUMIX_WEB_PORT` of that address, the live view at `LUMIX_STREAM_PORT`,
+and the camera reports its events to `LUMIX_EVENT_PORT`.
 
 `host` works as well, with the interface on the server's own address. If you
 must use bridge with port mapping, the UDP port needs the same number on both

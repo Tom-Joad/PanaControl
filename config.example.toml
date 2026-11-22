@@ -10,6 +10,12 @@ device_name = "lumix-remote"
 # Local UDP port the camera sends the frames to
 port = 49199
 
+[events]
+# Local TCP port the camera reports its events to; 0 switches them off
+port = 49198
+# Address the camera reports to, if not this machine's own (behind NAT)
+host = ""
+
 [media]
 # Folder for files downloaded from the camera's cards. Empty: no download.
 download_dir = ""

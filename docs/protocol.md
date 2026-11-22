@@ -471,6 +471,10 @@ device description. The reply is `HTTP 200` with a `SID` and
 `TIMEOUT: Second-300`. No session is needed: the subscription was made before
 the registration. `UNSUBSCRIBE` with the `SID` ends it.
 
+It is renewed the standard way: `SUBSCRIBE` with only `SID` and `TIMEOUT`
+returns `HTTP 200` with the same `SID`. An unknown `SID`, also one that was
+just unsubscribed, gets `HTTP 412`; then a new subscription is needed.
+
 The camera then sends `NOTIFY` requests to the callback address. The first
 one comes at once and carries the standard `SourceProtocolInfo`. Later ones
 look like this:
