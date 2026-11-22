@@ -24,9 +24,11 @@ only comes with a new major version.
   the new TCP port `LUMIX_EVENT_PORT` (49198) for this; with an own address
   on the LAN nothing has to be set, with port mapping see the README.
 - **Recording time.** The camera's own counter is shown next to REC.
-- **Shutter speed, exposure compensation and white balance** in the bar,
-  set like ISO and read back from the camera; the camera's temperature state
-  and the active card slot as readings.
+- **Shutter angle** in the bar, set like ISO and read back from the camera.
+- **More** opens what is not needed for every take: exposure compensation
+  and white balance to set, the aperture, the frame rate, the camera's
+  temperature state and the active card slot to read, and the focus
+  controls. The bar itself keeps ISO, shutter, battery and remaining time.
 - **Focus steps.** **Far** and **Near** move the focus, with the distance
   the lens reports.
 - **Touch focus**, behind a switch that is off after every load: only while

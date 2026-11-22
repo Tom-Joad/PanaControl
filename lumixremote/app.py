@@ -21,7 +21,6 @@ import asyncio
 import contextlib
 import ipaddress
 import logging
-import math
 import os
 import pathlib
 import threading
@@ -239,53 +238,6 @@ def values_from_menu(allmenu: str, name: str) -> list[str]:
     return list(seen)
 
 
-# Shutter speeds offered in the interface. The camera publishes no list for
-# them (see docs/protocol.md), so this is the usual series in third stops,
-# as Tv in steps of 1/256. The camera snaps to what it allows; the value is
-# read back after every change.
-SHUTTER_TIMES = (
-    8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500,
-    400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10,
-    8, 6, 5, 4, 3, 2.5, 2,
-)
-
-
-def shutter_values() -> list[str]:
-    """Tv for each time of the series: 1/8000 is 13, each entry a third less.
-
-    The camera counts in thirds and rounds them up: its 1/20 s reads
-    `1110/256`, which is 4 + 86/256, and 1/60 s is `1536/256`.
-    """
-    return [f"{math.ceil(256 * (39 - index) / 3)}/256" for index in range(len(SHUTTER_TIMES))]
-
-
-def shutter_labels() -> list[str]:
-    return [f"1/{time_:g}" for time_ in SHUTTER_TIMES]
-
-
-def _tv(value: str) -> float | None:
-    try:
-        top, bottom = value.split("/")
-        return int(top) / int(bottom)
-    except (ValueError, ZeroDivisionError):
-        return None
-
-
-def nearest_shutter(value: str, series: list[str]) -> str:
-    """The entry of the series a value read from the camera stands for.
-
-    The camera's rounding of a third is not always ours; a value within a
-    tenth of a stop of an entry is that entry. Anything else stays as it is.
-    """
-    tv = _tv(value)
-    if tv is None:
-        return value
-    for entry in series:
-        if abs((_tv(entry) or 0.0) - tv) < 0.1:
-            return entry
-    return value
-
-
 def focus_from_reply(reply: str) -> dict | None:
     """Lens position from the reply to a focus step.
 
@@ -388,7 +340,9 @@ class Controller:
     }
 
     # Settings of the bar, each set and read back on the device.
-    BAR_SETTINGS = ("iso", "whitebalance", "exposure", "shtrspeed")
+    # The shutter is set as an angle, as on the camera in video; the camera
+    # names the angles it offers, which it doesn't for shutter speeds.
+    BAR_SETTINGS = ("iso", "shtrspeed_angle", "whitebalance", "exposure")
 
     # The media view needs playback. Gap between two playmode attempts.
     PLAYMODE_RETRY = 8.0
@@ -442,7 +396,7 @@ class Controller:
         self._resumes = 0
         # The settings of the bar: current value and what may be chosen.
         self._settings: dict[str, str] = {}
-        self._setting_values: dict[str, list[str]] = {"shtrspeed": shutter_values()}
+        self._setting_values: dict[str, list[str]] = {}
         self._setting_turn = 0
         # Lens position, known only after a focus step: the camera has no
         # call that just reads it.
@@ -708,7 +662,7 @@ class Controller:
             # doesn't pull it over the WLAN again every time.
             try:
                 menu = self.camera.get_info("allmenu")
-                for name in ("iso", "whitebalance", "exposure"):
+                for name in self.BAR_SETTINGS:
                     found = values_from_menu(menu, name)
                     if found:
                         self._setting_values[name] = found
@@ -861,8 +815,6 @@ class Controller:
             except LumixError as exc:
                 log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
                 continue
-            if name == "shtrspeed":
-                value = nearest_shutter(value, self._setting_values["shtrspeed"])
             with self._lock:
                 self._settings[name] = value
 
@@ -1118,8 +1070,6 @@ class Controller:
         self.camera.set_setting(name, value)
         time.sleep(0.4)
         actual = self.camera.get_setting(name)
-        if name == "shtrspeed":
-            actual = nearest_shutter(actual, self._setting_values["shtrspeed"])
         with self._lock:
             self._settings[name] = actual
         return actual
@@ -1181,12 +1131,9 @@ class Controller:
 
     def snapshot_settings(self) -> dict:
         with self._lock:
-            settings = {name: {"value": self._settings.get(name, ""),
-                               "values": self._setting_values.get(name, [])}
-                        for name in self.BAR_SETTINGS}
-        # The camera names no shutter speeds; the names come with the series.
-        settings["shtrspeed"]["labels"] = shutter_labels()
-        return settings
+            return {name: {"value": self._settings.get(name, ""),
+                           "values": self._setting_values.get(name, [])}
+                    for name in self.BAR_SETTINGS}
 
     def snapshot(self) -> dict:
         """Current view of the world, safe to serialise at any time."""
@@ -1459,7 +1406,7 @@ async def set_iso(request: Request) -> dict:
 
 @app.post("/api/setting", **COMMAND)
 async def set_setting(request: Request) -> dict:
-    """Set white balance, exposure compensation, shutter speed or ISO.
+    """Set ISO, shutter angle, white balance or exposure compensation.
 
     Reports the value the camera really adopted.
     """

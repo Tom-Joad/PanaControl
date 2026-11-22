@@ -181,10 +181,13 @@ DOWNLOADS=$(mktemp -d)
 # As Docker creates a missing host folder: owned by root.
 docker run --rm -v "$DOWNLOADS":/d --entrypoint chown "$IMAGE" 0:0 /d
 docker run -d --name "$NAME" "${HARDENING[@]}" -e PUID="$PUID" -e PGID="$PGID" \
-    -e LUMIX_CAMERA_IP="$CAMERA" -v "$DOWNLOADS":/downloads "$IMAGE" >/dev/null
+    -e UMASK=002 -e LUMIX_CAMERA_IP="$CAMERA" -v "$DOWNLOADS":/downloads "$IMAGE" >/dev/null
 wait_healthy
 [[ $(media folder_problem) == "" ]] || fail "a mapped folder is refused: '$(media folder_problem)'"
 [[ $(docker exec "$NAME" stat -c %u /downloads) == "$PUID" ]] || fail "/downloads was not handed to abc"
+# With UMASK=002 the group may delete what the app saved: write access to the folder.
+[[ $(docker exec "$NAME" stat -c %a /downloads) == 775 ]] \
+    || fail "/downloads has mode $(docker exec "$NAME" stat -c %a /downloads), not 775"
 docker stop -t 30 "$NAME" >/dev/null
 rmdir "$DOWNLOADS"
 

@@ -70,6 +70,12 @@ with the container path `/downloads` and a folder on a share, for example
 `/mnt/user/media/panacontrol`. Until then the **Cards** view says that no
 folder is mapped.
 
+The downloaded files belong to `PUID:PGID` (`nobody:users`). To move or
+delete them from a share as another user, the container needs the variable
+`UMASK` set to `002`; a container installed from an older template may lack
+it. A folder that Docker created before version 3.4.0 handled this keeps its
+mode: `chmod 775` it once, or run Unraid's **New Permissions** on the share.
+
 ## Settings
 
 | Variable | Default | Meaning |

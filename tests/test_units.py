@@ -1708,14 +1708,6 @@ def test_settings_of_the_bar_are_validated_set_and_read_back(viewer):
         controller.set_setting("device_name", "x")
 
 
-def test_the_shutter_series_counts_in_the_cameras_thirds():
-    values = appmod.shutter_values()
-    times = appmod.SHUTTER_TIMES
-    assert values[times.index(20)] == "1110/256"    # read on the device at 1/20 s
-    assert values[times.index(60)] == "1536/256"
-    assert values[0] == "3328/256" and values[-1] == "256/256"
-
-
 def test_the_focus_reply_gives_position_and_an_estimated_distance():
     reply = "ok,346,1024,0,0,1024,32000/214,16000/375,8000/536,4000/697,2000/858,0/0,0/0"
     focus = appmod.focus_from_reply(reply)
@@ -1832,16 +1824,6 @@ def test_the_list_is_left_out_of_a_poll_while_it_is_unchanged(card):
     assert again["items"] is None and again["rev"] == first["rev"]
     manager.enqueue(None)
     assert manager.snapshot(first["rev"])["items"] is not None
-
-
-def test_a_shutter_value_from_the_camera_is_named_by_the_series():
-    series = appmod.shutter_values()
-    # A third rounded the other way is still the same speed.
-    assert appmod.nearest_shutter("1109/256", series) == "1110/256"
-    assert appmod.nearest_shutter("16384/256", series) == "16384/256"
-    assert appmod.nearest_shutter("auto", series) == "auto"
-    labels = appmod.shutter_labels()
-    assert labels[series.index("1110/256")] == "1/20" and labels[-2] == "1/2.5"
 
 
 def test_commands_for_record_mode_are_refused_while_the_cards_are_open(viewer):

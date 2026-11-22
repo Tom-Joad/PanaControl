@@ -23,10 +23,13 @@ if [[ -z ${LSIO_NON_ROOT_USER} ]]; then
         exit 1
     fi
 
-    # A download folder that Docker created belongs to root; hand it over.
-    # A folder that already belongs to someone is left as it is.
+    # A download folder that Docker created belongs to root, with mode 755;
+    # hand it over and give it the mode UMASK asks for. Otherwise the files in
+    # it could be read by the group but not deleted: that needs write access
+    # to the folder. A folder that already belongs to someone is left as it is.
     DOWNLOADS=${LUMIX_DOWNLOAD_DIR:-/downloads}
     if [[ -d ${DOWNLOADS} ]] && [[ $(stat -c %u "${DOWNLOADS}") == 0 ]]; then
         lsiown abc:abc "${DOWNLOADS}"
+        chmod "$(printf '%o' $(( 0777 & ~$(umask) )))" "${DOWNLOADS}"
     fi
 fi

@@ -125,11 +125,16 @@ download folder, **Download all** everything that is not there yet.
 
 ### Exposure and focus
 
-**Shutter**, **EV** (exposure compensation) and **White balance** work like
-ISO: the camera supplies the lists for EV and white balance, the shutter
-speeds are the usual series in third stops, and after every change the value
-the camera really adopted is read back and shown. **Temp** and **Card** show
-the camera's temperature state and the active card slot.
+The bar shows what every take needs: **ISO** and **Shutter** to set,
+**Battery** and **Remaining** to read. **More** opens the rest: **EV**
+(exposure compensation), **White balance**, the aperture, the frame rate,
+**Temp** and **Card** (the camera's temperature state and the active card
+slot), and the focus controls.
+
+**Shutter** is the shutter angle in degrees, as on the camera in video. Like
+ISO, the lists for shutter angle, EV and white balance come from the camera,
+and after every change the value the camera really adopted is read back and
+shown.
 
 **Far** and **Near** move the focus a step; held, they keep moving. The
 reading between them is the distance the lens reports for its position, an
@@ -141,11 +146,10 @@ does a tap on the picture set the focus point, so a hand brushing a tablet
 changes nothing. While it is on, the double-tap for full screen rests; the
 corner button and V still switch it.
 
-Verified on the DC-GH6: setting white balance, exposure compensation and
-shutter speed, the focus steps with the position in the reply, and that the
-camera accepts a touch. Not yet looked at: what a touch does to the picture
-with the focus lever on MF, and which shutter speeds the camera refuses in
-which video mode.
+Verified on the DC-GH6: setting white balance and exposure compensation,
+reading the shutter angle, the focus steps with the position in the reply,
+and that the camera accepts a touch. Not yet verified: setting the shutter
+angle, and what a touch does to the picture with the focus lever on MF.
 
 ### Recording
 
@@ -260,7 +264,7 @@ the camera.
 | `POST /api/rec/start` | Start recording |
 | `POST /api/rec/stop` | Stop recording |
 | `POST /api/iso` | Set the sensitivity, JSON `{"value": "800"}` |
-| `POST /api/setting` | Set `whitebalance`, `exposure`, `shtrspeed` or `iso`, JSON `{"name": "exposure", "value": "1/3"}`; returns the value adopted |
+| `POST /api/setting` | Set `iso`, `shtrspeed_angle`, `whitebalance` or `exposure`, JSON `{"name": "exposure", "value": "1/3"}`; returns the value adopted |
 | `POST /api/focus` | Move the focus a step, JSON `{"direction": "near"}` or `"far"`; returns the lens position |
 | `POST /api/touch` | Touch focus at a point of the picture, JSON `{"x": 500, "y": 500}`, 0 to 1000 each way |
 | `GET /api/media` | The cards' contents, the download queue and its progress; with `?rev=<rev of the last reply>` the list is left out while unchanged |

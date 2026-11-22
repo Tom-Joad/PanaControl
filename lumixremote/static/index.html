@@ -23,6 +23,9 @@
     height: 100%;
     overscroll-behavior: none;
   }
+  /* Where the bar is taller than the screen leaves room for (a phone held
+     upright), the page scrolls; the ground stays ink all the way down. */
+  html { background: var(--surface-ink); }
 
   body {
     display: flex;
@@ -181,6 +184,15 @@
   }
   #touch-mark.show { display: block; }
 
+  /* The bar shows what every take needs: ISO, shutter, battery, remaining
+     time and the controls. The rest waits behind More (owner, 2026-11-22). */
+  body:not(.more) .extra { display: none; }
+  #more[aria-expanded="true"] {
+    background: var(--text-on-ink);
+    color: var(--surface-ink);
+    border-color: var(--text-on-ink);
+  }
+
   /* ---- Controls ------------------------------------------------------ */
 
   .actions {
@@ -211,6 +223,8 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
+    /* Never squeezed away by a tall bar: the page scrolls instead. */
+    min-height: 240px;
     background: var(--pitch);
     border: var(--stroke-hairline) solid var(--border-on-ink);
     /* A double-tap switches full screen instead of zooming. */
@@ -317,6 +331,9 @@
     text-align: left;
   }
   body.media #media { display: flex; }
+  /* With the cards open nothing in the bar can be used: only the name and
+     the state stay, and the view gets the screen. */
+  body.media header > :not(.wordmark):not(.link) { display: none; }
   body.media #view,
   body.media #overlay,
   body.media #touch-mark,
@@ -436,6 +453,9 @@
     #media-list .btn { grid-column: 1 / -1; }
     .media-bar .summary { width: 100%; }
     .media-bar .btn { flex: 1; padding: 0 var(--space-6); }
+    /* The way back comes first and takes the whole row. */
+    .media-bar #media-close { order: -1; flex-basis: 100%; }
+    .media-bar .tracked { display: none; }
   }
 
   /* ---- Full screen: only the live view ------------------------------ */
@@ -518,10 +538,14 @@
   /* Narrow window: the controls take their own row and share it. */
   @media (max-width: 760px) {
     .actions, .focus { width: 100%; }
+    .actions { flex-wrap: wrap; }
     .actions .btn, .focus .btn { flex: 1; padding: 0 var(--space-6); }
+    /* Three to a row, so five buttons keep a size a thumb can hit. */
+    .actions .btn { flex: 1 1 28%; }
     /* The switch gets its own row: it is the one that must not be hit by
        accident next to the step buttons. */
     .focus #touch { flex-basis: 100%; }
+    .focus { order: 1; }
   }
 </style>
 </head>
@@ -538,17 +562,17 @@
   </label>
   <label class="field">
     <span>Shutter</span>
-    <select id="set-shtrspeed" data-setting="shtrspeed" disabled><option>--</option></select>
+    <select id="set-shutter" data-setting="shtrspeed_angle" disabled><option>--</option></select>
   </label>
-  <label class="field">
+  <label class="field extra">
     <span>EV</span>
     <select id="set-exposure" data-setting="exposure" disabled><option>--</option></select>
   </label>
-  <label class="field">
+  <label class="field extra">
     <span>White balance</span>
     <select id="set-whitebalance" data-setting="whitebalance" disabled><option>--</option></select>
   </label>
-  <label class="field readonly">
+  <label class="field readonly extra">
     <span>Aperture</span>
     <!-- The camera offers no call to set it, see docs/protocol.md. -->
     <output class="value" id="aperture" title="Read only: the camera accepts no aperture value">--</output>
@@ -557,12 +581,12 @@
   <div class="readings">
     <div class="reading"><span>Battery</span><b class="value" id="batt">--</b></div>
     <div class="reading"><span>Remaining</span><b class="value" id="rest">--</b></div>
-    <div class="reading"><span>fps</span><b class="value" id="fps">--</b></div>
-    <div class="reading"><span>Temp</span><b class="value" id="temp">--</b></div>
-    <div class="reading"><span>Card</span><b class="value" id="card">--</b></div>
+    <div class="reading extra"><span>fps</span><b class="value" id="fps">--</b></div>
+    <div class="reading extra"><span>Temp</span><b class="value" id="temp">--</b></div>
+    <div class="reading extra"><span>Card</span><b class="value" id="card">--</b></div>
   </div>
 
-  <div class="focus">
+  <div class="focus extra">
     <button class="btn btn--on-ink" id="focus-far" type="button" title="Move the focus a step farther; hold to keep moving">Far</button>
     <div class="reading"><span>Focus</span><b class="value" id="focus-pos">--</b></div>
     <button class="btn btn--on-ink" id="focus-near" type="button" title="Move the focus a step nearer; hold to keep moving">Near</button>
@@ -574,6 +598,7 @@
     <button class="btn btn--primary" id="start">Record</button>
     <button class="btn btn--on-ink" id="stop">Stop</button>
     <button class="btn btn--on-ink" id="cards" title="Show and download what is on the cards">Cards</button>
+    <button class="btn btn--on-ink" id="more" type="button" aria-expanded="false" title="Show exposure compensation, white balance, aperture, focus and more readings">More</button>
   </div>
 </header>
 
@@ -779,8 +804,7 @@ function render(s, transportError) {
 
 
 /* ---- ISO, shutter, exposure compensation, white balance -------------- */
-// The lists come from the camera (the shutter series from the app), not
-// from this file. A select is only rebuilt when its list changed; otherwise
+// The lists come from the camera, not from this file. A select is only rebuilt when its list changed; otherwise
 // it would close on every poll. A set value is read back, and what the
 // camera chose instead is said.
 
@@ -789,15 +813,13 @@ const WB_NAMES = {
   cloudy: "Cloudy", shade: "Shade", halogen: "Incandescent", flash: "Flash"
 };
 
-// How a value reads in its select. The shutter speeds are named by the app,
-// which also supplies their series.
+// How a value reads in its select.
 const SETTING_LABEL = {
   iso(value) {
     return value === "auto" ? "AUTO" : value;
   },
-  shtrspeed(value, setting) {
-    const index = setting.values.indexOf(value);
-    return index >= 0 && setting.labels && setting.labels[index] || value;
+  shtrspeed_angle(value) {
+    return value + "°";
   },
   exposure(value) {
     return (value.startsWith("-") || value === "0" ? "" : "+") + value;
@@ -812,13 +834,10 @@ const SETTING_LABEL = {
 const settingBusy = {};
 const settingBuilt = {};
 
-let settingsNow = {};
-
 function renderSettings(s) {
-  settingsNow = s.settings || {};
   for (const sel of document.querySelectorAll("select[data-setting]")) {
     const name = sel.dataset.setting;
-    const setting = settingsNow[name] || { value: "", values: [] };
+    const setting = (s.settings || {})[name] || { value: "", values: [] };
     const values = setting.values.slice();
     // A value the camera reports but the list lacks still has to show.
     if (setting.value && !values.includes(setting.value)) values.push(setting.value);
@@ -829,7 +848,7 @@ function renderSettings(s) {
       for (const v of values) {
         const node = document.createElement("option");
         node.value = v;
-        node.textContent = SETTING_LABEL[name](v, setting);
+        node.textContent = SETTING_LABEL[name](v);
         sel.appendChild(node);
       }
     }
@@ -841,7 +860,7 @@ function renderSettings(s) {
 for (const sel of document.querySelectorAll("select[data-setting]")) {
   sel.addEventListener("change", async () => {
     const name = sel.dataset.setting, value = sel.value;
-    const label = (v) => SETTING_LABEL[name](v, settingsNow[name] || { values: [] });
+    const label = SETTING_LABEL[name];
     settingBusy[name] = true;
     sel.disabled = true;
     const reply = await post("/api/setting", { name, value });
@@ -931,6 +950,13 @@ function setTouch(on) {
   el("touch").setAttribute("aria-pressed", on ? "true" : "false");
   el("touch").textContent = on ? "Touch focus on" : "Touch focus off";
 }
+
+el("more").addEventListener("click", (ev) => {
+  const open = !body.classList.contains("more");
+  body.classList.toggle("more", open);
+  ev.currentTarget.setAttribute("aria-expanded", open ? "true" : "false");
+  ev.currentTarget.blur();
+});
 
 el("touch").addEventListener("click", (ev) => {
   ev.currentTarget.blur();

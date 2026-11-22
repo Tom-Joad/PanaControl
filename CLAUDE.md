@@ -48,6 +48,9 @@ and updates the document; assumptions don't replace measurements.
   Deliberate exception (owner, 2026-11-14): recording is shown in `red`,
   the REC label and the 3px frame around the live view, although status
   colours are otherwise never red. Red means recording on every camera.
+* The bar shows ISO and shutter angle to set, battery and remaining time to
+  read, and the controls. Everything else is behind **More** (owner,
+  2026-11-22). The shutter is shown as an angle in degrees, not as a time.
 
 ## Pitfalls that have cost time before
 
