@@ -93,6 +93,17 @@ def result_of(reply: str) -> str:
         return " ".join(reply.split())[:80]
 
 
+def focus_position(reply: str) -> int | None:
+    """The lens position from a focus reply (`ok,<position>,<maximum>,...`)."""
+    parts = [p.strip() for p in reply.split(",")]
+    if len(parts) < 2 or parts[0] != "ok":
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
 class AppProbe(Probe):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -215,8 +226,42 @@ class AppProbe(Probe):
         print(f"      datagrams arriving: {'yes' if self._latest else 'NO'}")
         self.sample("idle")
 
+    def focus_now(self) -> int | None:
+        """Where the lens stands; focus-stop moves nothing and reports it."""
+        return focus_position(self.raw(mode="camctrl", type="focus", value="focus-stop"))
+
+    def focus_back(self, target: int, tele_raises: bool) -> None:
+        """Step the lens back to where it stood, in short pulses.
+
+        The camera only knows "nearer" and "farther", not "go to", so this
+        approaches the old position and stops at the closest it gets.
+        """
+        best = None
+        for _ in range(60):
+            now = self.focus_now()
+            if now is None:
+                break
+            gap = target - now
+            if best is not None and abs(gap) >= best:
+                break       # no closer than the pulse before: one step is coarser
+            best = abs(gap)
+            if gap == 0:
+                break
+            towards_tele = (gap > 0) == tele_raises
+            self.raw(mode="camctrl", type="focus",
+                     value="tele-normal" if towards_tele else "wide-normal")
+            time.sleep(0.12)
+        final = self.focus_now()
+        print(f"      {self.at()} focus put back: wanted {target}, now {final}")
+        self.report["focus_restore"] = {"wanted": target, "final": final}
+
     def step_controls(self) -> None:
-        print("\n[7] Focus and zoom by command (the lens may move a little)")
+        print("\n[7] Focus and zoom by command (the lens moves and is put back)")
+        focus_reply = self.call("focus-stop (position)", mode="camctrl", type="focus",
+                                value="focus-stop")
+        start = focus_position(focus_reply)
+        print(f"      focus reply: {' '.join(focus_reply.split())[:80]}")
+        self.report["focus_reply"] = focus_reply
         self.call("oneshot_af", mode="camcmd", value="oneshot_af")
         time.sleep(1.5)
         self.call("touch 500/500 on", mode="camctrl", type="touch", value="500/500", value2="on")
@@ -231,9 +276,19 @@ class AppProbe(Probe):
         self.call("af_ae_lock on", mode="camctrl", type="af_ae_lock", value="on")
         time.sleep(1.0)
         self.call("af_ae_lock off", mode="camctrl", type="af_ae_lock", value="off")
-        for value in ("tele-normal", "focus-stop", "wide-normal", "focus-stop"):
-            self.call(f"focus {value}", mode="camctrl", type="focus", value=value)
-            time.sleep(0.6)
+        before = self.focus_now()
+        reply = self.call("focus tele-normal", mode="camctrl", type="focus", value="tele-normal")
+        time.sleep(0.6)
+        after = self.focus_now()
+        print(f"      focus: {before} -> {after} after tele-normal ({' '.join(reply.split())[:60]})")
+        self.call("focus wide-normal", mode="camctrl", type="focus", value="wide-normal")
+        time.sleep(0.6)
+        self.call("focus focus-stop", mode="camctrl", type="focus", value="focus-stop")
+        if start is None or before is None or after is None or after == before:
+            print("      the camera reports no usable focus position: the lens "
+                  "stays where the tests left it")
+        else:
+            self.focus_back(start, tele_raises=after > before)
         for value in ("tele-normal", "zoomstop", "wide-normal", "zoomstop"):
             self.call(f"zoom {value}", mode="camcmd", value=value)
             time.sleep(0.6)

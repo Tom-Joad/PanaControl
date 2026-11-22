@@ -1241,3 +1241,9 @@ def test_replies_are_read_for_the_report():
     state = "<camrply><result>ok</result><state><rec>on</rec><cammode>rec</cammode></state></camrply>"
     assert appprobe.state_fields(state) == {"rec": "on", "cammode": "rec"}
     assert appprobe.state_fields("garbage") == {}
+
+
+def test_the_focus_position_is_read_from_the_reply():
+    assert appprobe.focus_position("ok,512,1023,0,0") == 512
+    assert appprobe.focus_position("err_param") is None
+    assert appprobe.focus_position("ok") is None
