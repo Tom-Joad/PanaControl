@@ -276,6 +276,26 @@ resolution in practice, whether the header before the JPEG has a constant
 length, whether the stream holds without kicking, and whether the session
 survives a longer pause without commands.
 
+### Test of listing, download and events
+
+```bash
+python3 -m lumixremote.mediaprobe --ip 192.0.2.10
+```
+
+Checks on a real camera what `docs/media-transfer.md` and
+`docs/phone-app-notes.md` took from the phone app: the camera's events,
+listing the cards, downloading a sample of each kind of file, the fields of
+the state query and the layout of the live view datagram. It changes nothing
+on the cards and records nothing, switches the camera to playback and back,
+and refuses to run while a recording is running. Stop PanaControl first: the
+camera holds one remote session. The replies land in `out/mediaprobe/`; they
+contain the camera's identifiers and stay out of the repository.
+
+| Switch | Effect |
+|---|---|
+| `--list-max 200` | entries to list per folder at most |
+| `--download-mb 32` | megabytes to fetch per sample file at most |
+
 ## Layout
 
 | File | Content |
@@ -285,6 +305,7 @@ survives a longer pause without commands.
 | `lumixremote/app.py` | Connection keeper, routes, MJPEG output |
 | `lumixremote/static/` | Interface without a build step, stylesheets and fonts; `app/` holds the home-screen manifest, icons and the keep-awake video |
 | `lumixremote/probe.py` | Measuring run and results |
+| `lumixremote/mediaprobe.py` | Test of listing, download, events and state |
 | `docs/protocol.md` | What was verified on the device |
 | `unraid/README-UNRAID.md` | Running on an Unraid server |
 | `unraid/panacontrol.xml` | Container template for Unraid |

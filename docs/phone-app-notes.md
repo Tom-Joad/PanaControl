@@ -38,9 +38,13 @@ What this could give PanaControl:
 * **Lens changes** (`lens_Atta`, `lens_Deta`), so the aperture limits are
   re-read at the right moment, and the **fan alert**.
 
-It needs a TCP port on the container that the camera can reach. Open: whether
-the DC-GH6 sends these events, and whether they survive the dropouts
-described in `protocol.md`.
+It needs a TCP port on the container that the camera can reach.
+
+Measured on 2026-11-22: the DC-GH6 accepts the subscription and sent
+`Sync` = `lens_Atta`; see "Events" in `protocol.md`. Still open: the `VRec`
+values during a real recording, why no `mod_Play` came for the change to
+playback, and whether the subscription survives the dropouts described in
+`protocol.md`.
 
 ## More fields in `getstate`
 
@@ -55,10 +59,12 @@ reply (`x5.C3065i`):
 | `sd_memory`, `sdcardstatus` | card present and its state, e.g. `write_protected`, `card_not_supported`, `media_over2tb` |
 | `state_icon`, `processingstate` | warnings, among them `heat_warn_cannot_use`, `heat_warn_card_temperature`, `memory_card_heat_detect`, `memory_card_heat_cannot_rec`, `battery_degradation` |
 
-`CameraState.raw` already holds every field the camera sends, so what the
-DC-GH6 really reports can be read from one logged reply. Candidates for the
-top bar: the elapsed recording time from the camera, the recording slot and a
-heat warning.
+The DC-GH6 names its fields differently; the measured list is under "The
+state query" in `protocol.md`. Of the app's names only `sdcardstatus` and
+`sd_memory` occur there. The counterparts are probably `progress_time` for
+the elapsed recording time, `current_sd` and `slotfunc` for the recording
+slot, and `temperature` and `warn_disp` for heat warnings; their values
+during a recording and in a warning state are unmeasured.
 
 ## The live view datagram has a fixed layout
 
@@ -82,13 +88,14 @@ The app computes it (`s5.C2818b`, all numbers big-endian):
 | 32 | n | information block, starts with a 2-byte type (1, 2, 3, 5, 6, 8, 9, 10, 11 or 12) |
 | 32 + n | | JPEG |
 
-So the JPEG starts at `32 + (u16 at offset 30)`. That would match the
-measured header offsets if the information block was 308, 292 and 244 bytes
-long in that run; to be checked against a captured datagram. The typed
-information block carries the exposure readings the app shows over the
-picture. Its fields are not named in the decompiled code; mapping them
-(shutter speed, ISO, exposure compensation, focus frames with coordinates
-and colour) needs captured datagrams next to known camera settings.
+So the JPEG starts at `32 + (u16 at offset 30)`. Measured on the DC-GH6 for
+the header length 324, see "Live stream" in `protocol.md`; bytes 9 to 14 are
+the camera's MAC address, byte 16 was `0x21`, and the information block had
+type 12. The typed information block carries the exposure readings the app
+shows over the picture. Its fields are not named in the decompiled code;
+mapping them (shutter speed, ISO, exposure compensation, focus frames with
+coordinates and colour) needs captured datagrams next to known camera
+settings.
 
 Also seen: the app can merge frames that span several datagrams. On the
 DC-GH6 at 640x360 one datagram per frame was measured; a larger

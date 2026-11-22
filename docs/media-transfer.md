@@ -104,16 +104,20 @@ header. The optional request header `X-CONVERT: MediumSize` or
 `Range`; whether the camera can resume a broken download is unknown.
 (`r5.d`, `r5.AbstractC2682b`)
 
-## To be measured on the DC-GH6
+## Measured since
 
-* Does `camcmd&value=playmode` get `ok`? `protocol.md` lists it as not
-  accepted; the camera was possibly not ready or already in playback then.
-  It switches to playback by itself after the registration, which may be
-  enough.
-* What does `getinfo&type=capability` name for the two card slots (CFexpress
-  and SD)?
-* Which `<res>` kinds do MOV and ProRes clips carry, and can they be fetched?
-* Host and port of the `<res>` addresses, the transfer rate, and whether
-  `Range` works.
-* Does the session survive a long download without `getstate`, and what does
-  the camera do when recording is asked for meanwhile?
+On 2026-11-22 the listing, the download of a MOV clip, `Range` and
+`playmode` were measured on the DC-GH6; see "Listing and downloading the
+card's contents" in `protocol.md`. The sequence above held, with two
+differences: the DC-GH6 names no folders in the capability reply, everything
+is listed below `ObjectID` `0`, and MOV clips can be fetched although the
+app's own table forbids the app to copy them.
+
+Still to be measured:
+
+* Photos: which `<res>` kinds JPEG and RAW carry, and whether RAW needs
+  `raw_img_send`.
+* Whether `ObjectID` `0` covers both card slots (CFexpress and SD).
+* A complete download of a large clip: does the session survive it without
+  `getstate`, and what does the camera do when recording is asked for
+  meanwhile?
