@@ -1865,7 +1865,7 @@ def test_a_run_saves_what_is_missing_and_gives_the_camera_back(card, tmp_path):
     session = SyncSession()
     manager = card(FakeCard(), session)
     state = manager.start_sync(session.enter, session.leave)
-    assert state["status"] == "running" and state["step"] == "listing"
+    assert state["status"] == "running" and state["step"] == "listing" and state["files"] == []
     _wait(lambda: manager.sync_state()["status"] == "done")
     state = manager.sync_state()
     assert state["files"] == [{"name": "P1000001.MOV", "card": "", "size": len(CLIP),
@@ -1915,6 +1915,8 @@ def test_a_cancelled_run_keeps_the_part_file_and_says_so(card, tmp_path, monkeyp
     manager.close(session.leave)
     state = manager.sync_state()
     assert state["status"] == "cancelled" and part.stat().st_size == 2000
+    # What a finished run did not get to has one name, however it ended.
+    assert [f["result"] for f in state["files"]] == ["skipped"]
     assert session.calls == ["enter", "leave"]
 
 
@@ -1971,3 +1973,15 @@ def test_a_run_gives_up_when_the_camera_never_reaches_playback(card, monkeypatch
 def test_the_state_of_a_run_is_readable_before_the_first_one(card):
     state = card(FakeCard()).sync_state()
     assert (state["status"], state["files"], state["error"]) == ("idle", [], "")
+
+
+def test_a_running_run_reports_counts_instead_of_every_file(card, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.5)
+    session = SyncSession()
+    manager = card(FakeCard(cut_after=2000), session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state().get("counts") == {"active": 1})
+    state = manager.sync_state()
+    assert state["files"] == [] and state["remaining"] > 0
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    assert "counts" not in manager.sync_state()

@@ -131,7 +131,7 @@ download folder, without the interface:
 | Call | Effect |
 |---|---|
 | `POST /api/media/sync` | Start a run: open the cards, save what is missing from both slots, close the cards again. Answers `202` with the state; `409` while a recording runs, a run is under way or no folder is mapped |
-| `GET /api/media/sync` | The running or the last run: `status` (`idle`, `running`, `done`, `failed`, `cancelled`), `step`, `error`, `started`, `finished`, `folder`, `remaining` bytes, `rate` in bytes per second, and `files` with `name`, `card`, `size` and `result` (`saved`, `present`, `failed`, `queued`, `active`, `pending`) |
+| `GET /api/media/sync` | The running or the last run: `status` (`idle`, `running`, `done`, `failed`, `cancelled`), `error`, `started`, `finished` and `folder`. While it runs also `step` (`listing`, `downloading`), `counts` (how many files are `saved`, `present`, `failed`, `queued`, `active`, `pending`), `remaining` bytes and `rate` in bytes per second. Once it has ended, `files` names every file with `name`, `card`, `size` and its `result`: `saved` in this run, `present` (was in the folder already), `failed` (with `error`) or `skipped` (not reached) |
 | `POST /api/media/sync/cancel` | End the run and give the camera back; the part file of the current download stays and is continued next time |
 
 The files land in the download folder, under the names the camera gave them.

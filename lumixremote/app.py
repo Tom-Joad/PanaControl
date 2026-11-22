@@ -1467,8 +1467,11 @@ async def media_open(request: Request) -> dict:
 @app.post("/api/media/close", **COMMAND)
 async def media_close(request: Request) -> dict:
     """Close the view. A running download is stopped and continues next time."""
-    controller, media = _controller(request), _media(request)
+    return await _close_cards(request)
 
+
+async def _close_cards(request: Request) -> dict:
+    controller, media = _controller(request), _media(request)
     # The worker first: the slot is put back only once nothing is being
     # fetched from the other card any more.
     return await _command(lambda: media.close(controller.media_close))
@@ -1509,9 +1512,11 @@ async def media_sync_state(request: Request) -> dict:
 @app.post("/api/media/sync/cancel", **COMMAND)
 async def media_sync_cancel(request: Request) -> dict:
     """End a running run and give the camera back; what was fetched of the
-    current file stays as a part file and is continued next time."""
-    controller, media = _controller(request), _media(request)
-    return await _command(lambda: media.close(controller.media_close))
+    current file stays as a part file and is continued next time. Without a
+    run nothing happens: a cards view somebody has open stays open."""
+    if _media(request).sync_state()["status"] != "running":
+        return {"ok": True}
+    return await _close_cards(request)
 
 
 @app.post("/api/media/cancel", **COMMAND)
