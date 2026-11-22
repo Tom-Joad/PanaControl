@@ -5,7 +5,7 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.4.0] - 2026-11-22
 
 ### Added
 - **Download what is on the cards.** The new **Cards** view lists the files
@@ -373,6 +373,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.4.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.4...v3.4.0
 [3.3.4]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.3...v3.3.4
 [3.3.3]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.2...v3.3.3
 [3.3.2]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.1...v3.3.2
