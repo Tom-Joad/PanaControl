@@ -317,10 +317,12 @@ class MediaManager:
         # knows that its result is nobody's any more.
         self._generation = 0
         self._folder_checked = 0.0
-        self._sync_started = 0.0
+        # Since when the camera has not been ready during a run's listing.
+        self._sync_unready_since: float | None = None
         self._sync_list_failures = 0
         # The run a script started, or the last one: see sync_state().
-        self._sync: dict = {"status": "idle"}
+        self._sync: dict = {"status": "idle", "step": "", "error": "",
+                            "started": None, "finished": None, "files": []}
         self._sync_leave: Callable[[], None] | None = None
         self._sync_present: set[str] = set()
         self._folder_state: tuple[str, int | None] = ("", None)
@@ -389,7 +391,7 @@ class MediaManager:
         with self._cond:
             self._sync = {"status": "running", "step": "listing", "error": "",
                           "started": time.time(), "finished": None, "files": []}
-            self._sync_started = time.monotonic()
+            self._sync_unready_since = None
             self._sync_list_failures = 0
             self._sync_leave = leave
             self._relist = True
@@ -435,11 +437,26 @@ class MediaManager:
             # The controller left the media mode by itself.
             self._end_sync_locked("failed", "The cards were closed: a recording started")
             return None
+        if self._sync["step"] == "downloading" and not self._queue:
+            # Decided before asking whether the camera is ready: a download
+            # that gave up on a silent camera has to end the run too.
+            failed = [i for i in self._items.values() if i.state == "failed"]
+            # A failure that is not about space empties the queue; what was
+            # left then counts as not saved either.
+            unsaved = [i for i in self._items.values() if i.state != "done"]
+            if failed or unsaved:
+                reason = failed[0].error if failed else "not every file was saved"
+                return lambda: self._finish_sync("failed", reason)
+            return lambda: self._finish_sync("done")
         if not self.session.media_ready:
+            now = time.monotonic()
+            if self._sync_unready_since is None:
+                self._sync_unready_since = now
             if (self._sync["step"] == "listing"
-                    and time.monotonic() - self._sync_started > self.SYNC_READY_WAIT):
+                    and now - self._sync_unready_since > self.SYNC_READY_WAIT):
                 return lambda: self._finish_sync("failed", "The camera did not reach playback")
             return None
+        self._sync_unready_since = None
         if self._sync["step"] == "listing" and self._listed and not self._relist:
             self._sync_present = {i.id for i in self._items.values() if i.state == "done"}
             for item in self._items.values():
@@ -450,15 +467,6 @@ class MediaManager:
             self._sync["step"] = "downloading"
         if self._sync["step"] == "listing" and self._sync_list_failures >= self.SYNC_LIST_TRIES:
             return lambda: self._finish_sync("failed", self._list_error)
-        if self._sync["step"] == "downloading" and not self._queue:
-            failed = [i for i in self._items.values() if i.state == "failed"]
-            # A failure that is not about space empties the queue; what was
-            # left then counts as not saved either.
-            unsaved = [i for i in self._items.values() if i.state != "done"]
-            if failed or unsaved:
-                reason = failed[0].error if failed else "not every file was saved"
-                return lambda: self._finish_sync("failed", reason)
-            return lambda: self._finish_sync("done")
         return None
 
     def _finish_sync(self, status: str, error: str = "") -> None:
@@ -631,6 +639,11 @@ class MediaManager:
                     self._cond.notify_all()
 
     def _next_job_locked(self):
+        if self._closed:
+            return None
+        job = self._sync_job_locked()
+        if job is not None:
+            return job
         if not self.session.media_wanted:
             # The media mode is over, also when the controller ended it by
             # itself (a recording started on the camera): the next view
@@ -638,11 +651,6 @@ class MediaManager:
             if self._listed:
                 self._reset_locked()
             return None
-        if self._closed:
-            return None
-        job = self._sync_job_locked()
-        if job is not None:
-            return job
         if not self.session.media_ready:
             return None
         if self._relist or not self._listed:

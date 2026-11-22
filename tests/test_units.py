@@ -1928,3 +1928,46 @@ def test_a_run_that_cannot_save_a_file_ends_failed_with_the_reason(card, tmp_pat
     assert "not enough space" in state["error"]
     assert state["files"][0]["result"] == "failed"
     assert session.calls == ["enter", "leave"]
+
+
+def test_a_run_ends_when_a_recording_closes_the_cards(card, monkeypatch):
+    session = SyncSession()
+    release = threading.Event()
+
+    class Slow(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                release.wait(5)
+            return super().__call__(request)
+
+    manager = card(Slow(), session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.snapshot()["listing"])
+    # The controller leaves the media mode by itself: started on the camera.
+    session.media_wanted = session.media_ready = False
+    release.set()
+    _wait(lambda: manager.sync_state()["status"] == "failed")
+    assert "recording started" in manager.sync_state()["error"]
+    # And the next run can start.
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+
+
+def test_a_run_gives_up_when_the_camera_never_reaches_playback(card, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "SYNC_READY_WAIT", 0.3)
+    session = SyncSession()
+
+    def enter():
+        session.calls.append("enter")
+        session.media_wanted = True         # wanted, but never ready
+
+    manager = card(FakeCard(), session)
+    manager.start_sync(enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "failed", 8.0)
+    assert "did not reach playback" in manager.sync_state()["error"]
+    assert session.calls == ["enter", "leave"]
+
+
+def test_the_state_of_a_run_is_readable_before_the_first_one(card):
+    state = card(FakeCard()).sync_state()
+    assert (state["status"], state["files"], state["error"]) == ("idle", [], "")
