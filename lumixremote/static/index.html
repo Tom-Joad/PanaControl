@@ -954,6 +954,9 @@ function setTouch(on) {
 el("more").addEventListener("click", (ev) => {
   const open = !body.classList.contains("more");
   body.classList.toggle("more", open);
+  // The switch for touch focus is hidden now: nothing may stay armed that
+  // the bar no longer shows.
+  if (!open && touchOn) setTouch(false);
   ev.currentTarget.setAttribute("aria-expanded", open ? "true" : "false");
   ev.currentTarget.blur();
 });
@@ -1098,6 +1101,7 @@ let mediaTimer = null;
 let mediaRev = null;        // revision of the list held in mediaItems
 let mediaItems = [];
 let mediaRows = new Map();  // id -> the row's nodes and what they show
+let mediaListed = false;
 
 function setMedia(open) {
   if (open === mediaOpen) return;
@@ -1110,6 +1114,7 @@ function setMedia(open) {
     mediaRev = null;
     mediaItems = [];
     mediaRows = new Map();
+    mediaListed = false;
     el("media-list").innerHTML = "";
     pollMedia();
   } else {
@@ -1134,7 +1139,10 @@ async function pollMedia() {
   if (mediaOpen && !mediaTimer) mediaTimer = setTimeout(pollMedia, 1000);
 }
 document.addEventListener("visibilitychange", () => {
-  if (mediaOpen && !document.hidden) pollMedia();
+  if (!mediaOpen || document.hidden) return;
+  // What changed while nobody looked is not in the short replies.
+  mediaRev = null;
+  pollMedia();
 });
 
 function fmtSize(n) {
@@ -1188,9 +1196,11 @@ function renderMedia(m) {
   }
 
   if (m.items) buildRows(items, m.listed);
+  const thumbs = new Set(m.thumbs || []);
   for (const item of items) {
     const progress = (m.progress || {})[item.id];
     if (progress != null) item.done = progress;
+    if (thumbs.has(item.id)) item.thumb = true;
     renderRow(item, !!m.folder_problem);
   }
 }
@@ -1199,7 +1209,9 @@ function renderMedia(m) {
 // under the finger stays where it is.
 function buildRows(items, listed) {
   const ids = items.map((i) => i.id);
-  if (ids.length === mediaRows.size && ids.every((id) => mediaRows.has(id))) return;
+  if (listed === mediaListed && ids.length === mediaRows.size
+      && ids.every((id) => mediaRows.has(id))) return;
+  mediaListed = listed;
   const list = el("media-list");
   list.innerHTML = "";
   mediaRows = new Map();

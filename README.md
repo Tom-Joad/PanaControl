@@ -120,8 +120,8 @@ download folder, **Download all** everything that is not there yet.
 * Both card slots are listed, each file with its card. The camera serves
   one card at a time, so the app switches the active slot as needed and puts
   it back when the view is closed.
-* Verified on the DC-GH6 with MOV and MP4 clips. Photos and RAW files go the
-  same way but were not on the cards when this was measured.
+* Used on the DC-GH6 with MOV and MP4 clips on both cards. Photos and RAW
+  files go the same way but were not on the cards.
 
 ### Exposure and focus
 
@@ -146,10 +146,9 @@ does a tap on the picture set the focus point, so a hand brushing a tablet
 changes nothing. While it is on, the double-tap for full screen rests; the
 corner button and V still switch it.
 
-Verified on the DC-GH6: setting white balance and exposure compensation,
-reading the shutter angle, the focus steps with the position in the reply,
-and that the camera accepts a touch. Not yet verified: setting the shutter
-angle, and what a touch does to the picture with the focus lever on MF.
+All of this was used on a DC-GH6 (firmware 3.01) from the interface; what
+was measured on the device call by call is in
+[`docs/protocol.md`](docs/protocol.md).
 
 ### Recording
 
@@ -158,7 +157,7 @@ counter. If a recording ends without **Stop** being pressed here, the
 picture carries a note with the reason and the time until it is confirmed
 with **OK** or the next recording starts: stopped on the camera, card full,
 card too slow, camera too hot, write error. The camera reports that itself,
-to the TCP port `LUMIX_EVENT_PORT`. Verified on the DC-GH6 for a stop on the
+to the TCP port `LUMIX_EVENT_PORT`. Measured on the DC-GH6 for a stop on the
 camera; the other reasons are the ones the phone app knows. If the port
 can't be reached, everything works as before and the note only says that
 the recording ended.

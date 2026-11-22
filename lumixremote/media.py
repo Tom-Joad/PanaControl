@@ -310,6 +310,8 @@ class MediaManager:
         self._folder_checked = 0.0
         self._folder_state: tuple[str, int | None] = ("", None)
         self._thumbs: dict[str, bytes] = {}
+        # Previews fetched in the last seconds, for the polls in between.
+        self._thumbs_new: deque[tuple[float, str]] = deque(maxlen=256)
         # The slot this thread last made active; None when unknown.
         self._slot: str | None = None
         self._rate: deque[tuple[float, int]] = deque(maxlen=64)
@@ -441,6 +443,7 @@ class MediaManager:
             rate = self._rate_locked()
             return {
                 "rev": self._rev,
+                "thumbs": [i for t, i in self._thumbs_new if time.monotonic() - t < 10.0],
                 "progress": {i.id: i.done for i in pending if i.state == "active"},
                 "queued_size": sum(i.size for i in pending),
                 "wanted": self.session.media_wanted,
@@ -627,7 +630,10 @@ class MediaManager:
                 # An empty entry keeps a broken thumbnail from being asked
                 # again before the next refresh.
                 self._thumbs[item.id] = data
-                self._rev += 1
+                # Not a new revision: with thousands of files every preview
+                # would send the whole list again. A poll names the new ones.
+                if data:
+                    self._thumbs_new.append((time.monotonic(), item.id))
 
     # -- download --
 

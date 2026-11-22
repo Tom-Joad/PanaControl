@@ -584,6 +584,24 @@ Unmeasured: photos (JPEG and RAW), MP4 clips, a complete download of a large
 file, whether the session survives it, and what happens when a second file
 is fetched at the same time.
 
+## Used through the app
+
+The owner ran version 3.4.0 against the DC-GH6 on 2026-11-22 and found every
+function working. That confirms the following in use, without new numbers:
+
+* `stopstream`, then `camcmd&value=playmode`, takes the camera from the
+  running live view into playback; `recmode` brings it back, and the live
+  view returns.
+* `setsetting&type=current_sd` during listing and before a download reaches
+  the files of the other card; they are fetched from the same addresses on
+  port 50001.
+* `setsetting&type=shtrspeed_angle&value=<degrees>` sets the shutter angle;
+  the values are the ones the menu definition lists (`11` to `357`).
+* `camctrl&type=touch` as an `on`/`off` pair sets the focus point from a tap
+  on the picture, and `camctrl&type=focus` steps the focus.
+* Clips were downloaded from the cards into the download folder. Whether a
+  very large clip survives a camera dropout in the middle is still unmeasured.
+
 ## Known failure patterns
 
 **Every command answers `err_busy`.** The camera holds exactly one remote

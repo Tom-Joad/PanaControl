@@ -1822,6 +1822,8 @@ def test_the_list_is_left_out_of_a_poll_while_it_is_unchanged(card):
     first = manager.snapshot()
     again = manager.snapshot(first["rev"])
     assert again["items"] is None and again["rev"] == first["rev"]
+    # The preview that just arrived is named instead of sending the list again.
+    assert again["thumbs"] == ["0110001"]
     manager.enqueue(None)
     assert manager.snapshot(first["rev"])["items"] is not None
 
