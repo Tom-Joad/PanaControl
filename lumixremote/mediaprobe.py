@@ -35,11 +35,11 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
-from urllib.parse import urljoin
 
 import httpx
 
 from .camera import DESCRIPTOR_PATH, DESCRIPTOR_PORT, Camera, LumixError
+from .events import event_url, local_ip_towards  # noqa: F401
 from .media import (CDS_PATH, DLNA_AGENT, DOWNLOAD_AGENT, SOAP_ACTION,  # noqa: F401
                     BrowseResult, Entry, Resource, _local, browse_envelope,
                     parse_browse, parse_protocol_info)
@@ -76,21 +76,6 @@ def parse_folders(capability_xml: str) -> list[dict[str, str]]:
                     "object_id": object_id,
                 })
     return folders
-
-
-def event_url(descriptor_xml: str, base: str) -> str | None:
-    """The eventSubURL of the ConnectionManager service, made absolute."""
-    try:
-        root = ET.fromstring(descriptor_xml)
-    except ET.ParseError:
-        return None
-    for service in root.iter():
-        if _local(service.tag) != "service":
-            continue
-        values = {_local(c.tag): (c.text or "").strip() for c in service}
-        if "ConnectionManager" in values.get("serviceType", "") and values.get("eventSubURL"):
-            return urljoin(base, values["eventSubURL"])
-    return None
 
 
 def datagram_layout(datagram: bytes) -> dict[str, int | bool]:
@@ -149,12 +134,6 @@ class EventListener:
         self._server.shutdown()
         self._server.server_close()
 
-
-def local_ip_towards(ip: str) -> str:
-    """The address of this machine as the camera sees it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-        probe.connect((ip, 9))
-        return probe.getsockname()[0]
 
 
 # ----------------------------------------------------------------- run ---

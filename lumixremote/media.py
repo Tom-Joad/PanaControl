@@ -26,7 +26,7 @@ import time
 import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Callable, Protocol
 
 import httpx
 
@@ -297,10 +297,18 @@ class MediaManager:
         self._relist = False
         self._queue: deque[str] = deque()
         self._cancel = False
-        # Set when the view is closed, until the controller has left the media
-        # mode: whatever the worker is doing ends, and nothing new starts.
+        # Set while the view is being closed: whatever the worker is doing
+        # ends, and nothing new starts.
         self._closed = False
         self._working = False
+        # Counts every change of the list the interface shows (not the
+        # progress of a download), so a poll can skip the unchanged list.
+        self._rev = 0
+        # Counts the resets, so a listing that was under way during one
+        # knows that its result is nobody's any more.
+        self._generation = 0
+        self._folder_checked = 0.0
+        self._folder_state: tuple[str, int | None] = ("", None)
         self._thumbs: dict[str, bytes] = {}
         # The slot this thread last made active; None when unknown.
         self._slot: str | None = None
@@ -315,7 +323,6 @@ class MediaManager:
     def stop(self) -> None:
         with self._cond:
             self._stop = True
-            self._cancel = True
             self._cond.notify_all()
         # Short: the controller's stopstream comes after this. A request
         # that still hangs ends when its connection is closed.
@@ -327,9 +334,10 @@ class MediaManager:
             self._relist = True
             self._cond.notify_all()
 
-    def closed(self, wait: float = 3.0) -> None:
-        """The media view is being closed: stop the download, forget the
-        listing, and give the worker a moment to let go of the camera."""
+    def close(self, leave: Callable[[], None], wait: float = 3.0) -> None:
+        """Close the media view: stop the download, forget the listing, give
+        the worker a moment to let go of the camera, and only then call
+        `leave`, which takes the camera out of the media mode."""
         deadline = time.monotonic() + wait
         with self._cond:
             self._closed = True
@@ -337,6 +345,12 @@ class MediaManager:
             self._cond.notify_all()
             while self._working and time.monotonic() < deadline:
                 self._cond.wait(0.1)
+        try:
+            leave()
+        finally:
+            with self._cond:
+                self._closed = False
+                self._cond.notify_all()
 
     def _reset_locked(self) -> None:
         self._cancel_locked()
@@ -345,6 +359,8 @@ class MediaManager:
         self._items = {}
         self._thumbs = {}
         self._slot = None
+        self._rev += 1
+        self._generation += 1
 
     def enqueue(self, ids: list[str] | None) -> int:
         """Queue the given items, or all that are not done yet. Returns how many."""
@@ -363,7 +379,7 @@ class MediaManager:
                 item.state, item.error = "queued", ""
                 self._queue.append(item_id)
                 added += 1
-            self._cancel = False
+            self._rev += 1
             self._cond.notify_all()
             return added
 
@@ -379,6 +395,7 @@ class MediaManager:
             if item and item.state == "queued":
                 item.state = ""
         self._queue.clear()
+        self._rev += 1
 
     def thumbnail(self, item_id: str) -> bytes | None:
         with self._cond:
@@ -390,25 +407,42 @@ class MediaManager:
         with self._cond:
             return bool(self._queue) or any(i.state == "active" for i in self._items.values())
 
-    def snapshot(self) -> dict:
-        problem = folder_problem(self.folder)
-        free = None
-        if not problem and self.folder is not None:
-            try:
-                free = shutil.disk_usage(self.folder).free
-            except OSError:
-                pass
+    def _folder(self) -> tuple[str, int | None]:
+        """(why nothing can be saved, free bytes), looked up every few seconds:
+        every viewer asks once a second, and the folder may be a network share."""
+        now = time.monotonic()
+        if now - self._folder_checked >= 5.0 or not self._folder_checked:
+            problem = folder_problem(self.folder)
+            free = None
+            if not problem:
+                try:
+                    free = shutil.disk_usage(self.folder).free
+                except OSError:
+                    pass
+            self._folder_state, self._folder_checked = (problem, free), now
+        return self._folder_state
+
+    def snapshot(self, known_rev: int | None = None) -> dict:
+        """The state for the interface. With `known_rev` equal to the current
+        revision the list is left out: a card can hold thousands of files,
+        and during a download only the progress changes."""
+        problem, free = self._folder()
         with self._cond:
-            items = [{
-                "id": i.id, "name": i.name, "title": i.title, "size": i.size,
-                "duration": i.duration, "video": i.video, "state": i.state,
-                "slot": i.slot,
-                "done": i.done, "error": i.error, "thumb": bool(self._thumbs.get(i.id)),
-            } for i in self._items.values()]
+            items = None
+            if known_rev != self._rev:
+                items = [{
+                    "id": i.id, "name": i.name, "title": i.title, "size": i.size,
+                    "duration": i.duration, "video": i.video, "state": i.state,
+                    "slot": i.slot,
+                    "done": i.done, "error": i.error, "thumb": bool(self._thumbs.get(i.id)),
+                } for i in self._items.values()]
             pending = [i for i in self._items.values() if i.state in ("queued", "active")]
             remaining = sum(max(i.size - i.done, 0) for i in pending)
             rate = self._rate_locked()
             return {
+                "rev": self._rev,
+                "progress": {i.id: i.done for i in pending if i.state == "active"},
+                "queued_size": sum(i.size for i in pending),
                 "wanted": self.session.media_wanted,
                 "ready": self.session.media_ready,
                 "listed": self._listed,
@@ -465,20 +499,14 @@ class MediaManager:
             # The media mode is over, also when the controller ended it by
             # itself (a recording started on the camera): the next view
             # starts fresh.
-            if self._listed or self._items:
+            if self._listed:
                 self._reset_locked()
-            self._closed = False
             return None
         if self._closed or not self.session.media_ready:
             return None
         if self._relist or not self._listed:
-            if self._listing:
-                return None
-            if self._queue or any(i.state == "active" for i in self._items.values()):
-                # Never relist under a running download.
-                self._relist = False
-            else:
-                self._relist = False
+            self._relist = False
+            if not self._queue:     # never relist under a running download
                 self._listing = True
                 return self._list
         if self._queue:
@@ -497,6 +525,7 @@ class MediaManager:
     def _list(self) -> None:
         error = ""
         items: dict[str, MediaItem] = {}
+        generation = self._generation
         try:
             self._slot = None
             for slot in self.session.card_slots() or [""]:
@@ -526,12 +555,13 @@ class MediaManager:
             with self._cond:
                 self._listing = False
         with self._cond:
-            if self._closed:
+            if generation != self._generation:
                 return      # closed meanwhile: this listing is nobody's
             self._list_error = error
             if not error:
                 self._items = items
                 self._listed = True
+                self._rev += 1
                 # Kept across a refresh; a thumbnail that failed is asked again.
                 self._thumbs = {k: v for k, v in self._thumbs.items() if k in items and v}
         if error:
@@ -559,7 +589,7 @@ class MediaManager:
 
     def _mark_present(self, items: dict[str, MediaItem]) -> None:
         """Files that are already whole in the folder count as done."""
-        if self.folder is None or folder_problem(self.folder):
+        if folder_problem(self.folder):
             return
         for item in items.values():
             if all(self._present(f) for f in item.files):
@@ -575,8 +605,9 @@ class MediaManager:
         """Make the card slot active that the next requests refer to."""
         if not slot or slot == self._slot:
             return
-        if self._stop or self._closed or not self.session.media_wanted:
-            raise Cancelled()
+        with self._cond:
+            if self._gone_locked():
+                raise Cancelled()
         self.session.select_slot(slot)
         time.sleep(self.SLOT_SETTLE)
         self._slot = slot
@@ -596,6 +627,7 @@ class MediaManager:
                 # An empty entry keeps a broken thumbnail from being asked
                 # again before the next refresh.
                 self._thumbs[item.id] = data
+                self._rev += 1
 
     # -- download --
 
@@ -609,6 +641,7 @@ class MediaManager:
             item.state, item.done, item.error = "active", 0, ""
             self._cancel = False
             self._rate.clear()
+            self._rev += 1
         started = time.monotonic()
         try:
             base = 0
@@ -617,16 +650,19 @@ class MediaManager:
                 base += file.size
             with self._cond:
                 item.state, item.done = "done", item.size
+                self._rev += 1
             log.info("media_downloaded", extra={
                 "file": item.name, "bytes": item.size,
                 "seconds": round(time.monotonic() - started)})
         except Cancelled:
             with self._cond:
                 item.state = ""
+                self._rev += 1
             log.info("media_download_cancelled", extra={"file": item.name})
         except (LumixError, OSError) as exc:
             with self._cond:
                 item.state, item.error = "failed", str(exc)
+                self._rev += 1
                 if not isinstance(exc, NoSpace):
                     # What comes next would fail the same way.
                     self._cancel_locked()
@@ -712,7 +748,9 @@ class MediaManager:
                 # placeholders were seen (for the preview pictures).
                 log.info("media_size_corrected", extra={
                     "file": file.name, "listed": file.size, "actual": actual})
-                file.size = actual
+                with self._cond:
+                    file.size = actual
+                    self._rev += 1
             if offset and r.status_code == 200:
                 offset = 0      # the camera ignored Range: start over
             elif offset and (r.status_code != 206 or not r.headers.get(
@@ -749,9 +787,13 @@ class MediaManager:
             item.done = done
             self._rate.append((time.monotonic(), done))
 
+    def _gone_locked(self) -> bool:
+        """Is there nobody left to work for?"""
+        return self._stop or self._closed or not self.session.media_wanted
+
     def _check_cancel(self) -> None:
         with self._cond:
-            if self._cancel or self._stop or self._closed or not self.session.media_wanted:
+            if self._cancel or self._gone_locked():
                 raise Cancelled()
 
     def _wait_for_camera(self) -> None:

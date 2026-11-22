@@ -1319,12 +1319,7 @@ def card(tmp_path, monkeypatch):
 
 
 def _wait(check, seconds: float = 5.0):
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        if check():
-            return
-        time.sleep(0.02)
-    raise AssertionError("condition not reached")
+    assert _until(check, seconds), "condition not reached"
 
 
 def _item(manager):
@@ -1399,8 +1394,7 @@ def test_closing_the_view_stops_the_download_and_keeps_the_part(card, tmp_path, 
     manager.enqueue(None)
     part = tmp_path / f"P1000001.MOV.{len(CLIP)}.part"
     _wait(lambda: part.exists() and part.stat().st_size == 2000)
-    session.media_wanted = False
-    manager.closed()
+    manager.close(lambda: setattr(session, "media_wanted", False))
     _wait(lambda: not manager.busy)
     assert part.stat().st_size == 2000
     assert not (tmp_path / "P1000001.MOV").exists()
@@ -1805,14 +1799,11 @@ def test_a_listing_that_ends_after_the_view_was_closed_is_dropped(card, monkeypa
 
     manager = card(Slow(), session)
     _wait(lambda: manager.snapshot()["listing"])
-    manager.closed(wait=0.1)
+    manager.close(lambda: setattr(session, "media_wanted", False), wait=0.1)
     release.set()
     _wait(lambda: not manager.snapshot()["listing"])
     assert manager.snapshot()["listed"] is False and manager.snapshot()["items"] == []
-    # Once the controller has left the media mode and the view is opened
-    # again, the cards are read afresh.
-    session.media_wanted = False
-    time.sleep(1.2)
+    # Opened again, at once: the cards are read afresh.
     session.media_wanted = True
     _wait(lambda: manager.snapshot()["listed"])
 
@@ -1831,3 +1822,31 @@ def test_the_touch_is_released_even_when_it_was_refused(monkeypatch):
     with pytest.raises(LumixError):
         camera.touch_focus(500, 500)
     assert sent == ["on", "off"]
+
+
+def test_the_list_is_left_out_of_a_poll_while_it_is_unchanged(card):
+    manager = card(FakeCard())
+    _wait(lambda: manager.snapshot()["listed"] and _item(manager)["thumb"])
+    first = manager.snapshot()
+    again = manager.snapshot(first["rev"])
+    assert again["items"] is None and again["rev"] == first["rev"]
+    manager.enqueue(None)
+    assert manager.snapshot(first["rev"])["items"] is not None
+
+
+def test_a_shutter_value_from_the_camera_is_named_by_the_series():
+    series = appmod.shutter_values()
+    # A third rounded the other way is still the same speed.
+    assert appmod.nearest_shutter("1109/256", series) == "1110/256"
+    assert appmod.nearest_shutter("16384/256", series) == "16384/256"
+    assert appmod.nearest_shutter("auto", series) == "auto"
+    labels = appmod.shutter_labels()
+    assert labels[series.index("1110/256")] == "1/20" and labels[-2] == "1/2.5"
+
+
+def test_commands_for_record_mode_are_refused_while_the_cards_are_open(viewer):
+    controller, camera, _ = viewer
+    controller.media_open()
+    for command in (controller.autofocus, lambda: controller.set_setting("iso", "800")):
+        with pytest.raises(LumixError, match="cards are open"):
+            command()

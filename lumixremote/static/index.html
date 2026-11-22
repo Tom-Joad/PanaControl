@@ -408,7 +408,8 @@
     white-space: nowrap;
     touch-action: manipulation;
   }
-  #media-empty {
+  #media-list #media-empty {
+    display: block;
     padding: var(--space-24);
     color: var(--text-on-ink-muted);
     text-align: center;
@@ -783,27 +784,20 @@ function render(s, transportError) {
 // it would close on every poll. A set value is read back, and what the
 // camera chose instead is said.
 
-const TIMES = [8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500,
-               400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10,
-               8, 6, 5, 4, 3, 2.5, 2];
 const WB_NAMES = {
   auto: "AWB", auto_cool: "AWB cool", auto_warm: "AWB warm", daylight: "Daylight",
   cloudy: "Cloudy", shade: "Shade", halogen: "Incandescent", flash: "Flash"
 };
 
-function tv(value) {
-  const parts = String(value).split("/");
-  return parts.length === 2 ? Number(parts[0]) / Number(parts[1]) : NaN;
-}
-
+// How a value reads in its select. The shutter speeds are named by the app,
+// which also supplies their series.
 const SETTING_LABEL = {
   iso(value) {
     return value === "auto" ? "AUTO" : value;
   },
-  shtrspeed(value) {
-    // Tv counts thirds from 1/8000 (13) down; name it by the usual series.
-    const index = Math.round((13 - tv(value)) * 3);
-    return index >= 0 && index < TIMES.length ? "1/" + TIMES[index] : value;
+  shtrspeed(value, setting) {
+    const index = setting.values.indexOf(value);
+    return index >= 0 && setting.labels && setting.labels[index] || value;
   },
   exposure(value) {
     return (value.startsWith("-") || value === "0" ? "" : "+") + value;
@@ -818,18 +812,16 @@ const SETTING_LABEL = {
 const settingBusy = {};
 const settingBuilt = {};
 
+let settingsNow = {};
+
 function renderSettings(s) {
+  settingsNow = s.settings || {};
   for (const sel of document.querySelectorAll("select[data-setting]")) {
     const name = sel.dataset.setting;
-    const setting = (s.settings || {})[name] || { value: "", values: [] };
+    const setting = settingsNow[name] || { value: "", values: [] };
     const values = setting.values.slice();
     // A value the camera reports but the list lacks still has to show.
-    let current = setting.value;
-    if (name === "shtrspeed" && current) {
-      const near = values.find((v) => Math.abs(tv(v) - tv(current)) < 0.02);
-      if (near) current = near;
-    }
-    if (current && !values.includes(current)) values.push(current);
+    if (setting.value && !values.includes(setting.value)) values.push(setting.value);
     const key = values.join(",");
     if (key && key !== settingBuilt[name]) {
       settingBuilt[name] = key;
@@ -837,35 +829,25 @@ function renderSettings(s) {
       for (const v of values) {
         const node = document.createElement("option");
         node.value = v;
-        node.textContent = SETTING_LABEL[name](v);
+        node.textContent = SETTING_LABEL[name](v, setting);
         sel.appendChild(node);
       }
     }
-    if (!settingBusy[name] && current && sel.value !== current) sel.value = current;
-    sel.disabled = !!settingBusy[name] || s.status !== "online" || !current;
+    if (!settingBusy[name] && setting.value && sel.value !== setting.value) sel.value = setting.value;
+    sel.disabled = !!settingBusy[name] || s.status !== "online" || !setting.value;
   }
 }
 
 for (const sel of document.querySelectorAll("select[data-setting]")) {
   sel.addEventListener("change", async () => {
     const name = sel.dataset.setting, value = sel.value;
+    const label = (v) => SETTING_LABEL[name](v, settingsNow[name] || { values: [] });
     settingBusy[name] = true;
     sel.disabled = true;
-    try {
-      const r = await fetch("/api/setting", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, value })
-      });
-      const reply = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        flash(reply.detail || ("HTTP " + r.status));
-      } else if (reply.value && SETTING_LABEL[name](reply.value) !== SETTING_LABEL[name](value)) {
-        flash("The camera chose " + SETTING_LABEL[name](reply.value) + " instead of "
-              + SETTING_LABEL[name](value), "Adjusted");
-      }
-    } catch (err) {
-      flash("Not set: " + (err && err.message || err));
+    const reply = await post("/api/setting", { name, value });
+    if (reply && reply.value && reply.value !== value) {
+      // The camera snaps to the value allowed in the current mode.
+      flash("The camera chose " + label(reply.value) + " instead of " + label(value), "Adjusted");
     }
     settingBusy[name] = false;
     poll();
@@ -902,23 +884,12 @@ async function focusStep(direction) {
   if (el("focus-far").disabled) { stopFocus(); return; }
   if (focusInFlight) return;
   focusInFlight = true;
-  try {
-    const r = await fetch("/api/focus", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction })
-    });
-    const reply = await r.json().catch(() => ({}));
-    if (r.ok && reply.focus) {
-      focusShown = reply.focus;
-      el("focus-pos").textContent = fmtFocus(focusShown);
-    } else {
-      stopFocus();
-      flash(reply.detail || ("HTTP " + r.status));
-    }
-  } catch (err) {
+  const reply = await post("/api/focus", { direction });
+  if (reply && reply.focus) {
+    focusShown = reply.focus;
+    el("focus-pos").textContent = fmtFocus(focusShown);
+  } else {
     stopFocus();
-    flash("Command not delivered: " + (err && err.message || err));
   }
   focusInFlight = false;
 }
@@ -943,8 +914,6 @@ for (const [id, direction] of [["focus-far", "far"], ["focus-near", "near"]]) {
   for (const name of ["pointerup", "pointerleave", "pointercancel"]) {
     button.addEventListener(name, stopFocus);
   }
-  // Enter or Space on the focused button: one step.
-  button.addEventListener("click", (ev) => { if (ev.detail === 0) focusStep(direction); });
   button.addEventListener("contextmenu", (ev) => ev.preventDefault());
 }
 
@@ -994,21 +963,7 @@ async function touchFocus(ev) {
   mark.classList.add("show");
   clearTimeout(touchMarkTimer);
   touchMarkTimer = setTimeout(() => mark.classList.remove("show"), 1500);
-  try {
-    const r = await fetch("/api/touch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(point)
-    });
-    if (!r.ok) {
-      mark.classList.remove("show");
-      const reply = await r.json().catch(() => ({}));
-      flash(reply.detail || ("HTTP " + r.status));
-    }
-  } catch (err) {
-    mark.classList.remove("show");
-    flash("Command not delivered: " + (err && err.message || err));
-  }
+  if (!await post("/api/touch", point)) mark.classList.remove("show");
 }
 
 function setButtons(canStart, canStop) {
@@ -1074,18 +1029,27 @@ function fmtRemaining(v) {
 
 /* ---- Commands ------------------------------------------------------ */
 
-async function send(path, button) {
-  button.disabled = true;
+// POST a command. A refusal or a failed delivery is flashed here; the
+// caller gets the reply object, or null.
+async function post(path, payload) {
   try {
-    const r = await fetch(path, { method: "POST" });
-    if (!r.ok) {
-      let detail = "HTTP " + r.status;
-      try { detail = (await r.json()).detail || detail; } catch (e) { /* keep the status */ }
-      flash(detail);
-    }
+    const r = await fetch(path, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : {},
+      body: payload ? JSON.stringify(payload) : undefined
+    });
+    const reply = await r.json().catch(() => ({}));
+    if (r.ok) return reply;
+    flash(reply.detail || ("HTTP " + r.status));
   } catch (err) {
     flash("Command not delivered: " + (err && err.message || err));
   }
+  return null;
+}
+
+async function send(path, button) {
+  button.disabled = true;
+  await post(path);
   // The state comes from the camera, not from an assumption here.
   poll();
 }
@@ -1105,31 +1069,47 @@ function flash(message, label) {
 
 let mediaOpen = false;
 let mediaTimer = null;
-let mediaRows = "";
+let mediaRev = null;        // revision of the list held in mediaItems
+let mediaItems = [];
+let mediaRows = new Map();  // id -> the row's nodes and what they show
 
 function setMedia(open) {
   if (open === mediaOpen) return;
   mediaOpen = open;
   body.classList.toggle("media", open);
-  clearInterval(mediaTimer);
+  clearTimeout(mediaTimer);
   mediaTimer = null;
   if (open) {
     if (body.classList.contains("full")) leaveFull();
-    mediaRows = "";
+    mediaRev = null;
+    mediaItems = [];
+    mediaRows = new Map();
     el("media-list").innerHTML = "";
     pollMedia();
-    mediaTimer = setInterval(pollMedia, 1000);
   } else {
     openStream();
   }
 }
 
+// One poll after the other, never two at once. The list itself only comes
+// when it changed: a card can hold thousands of files, and during a download
+// only the progress moves. Nothing is fetched for a tab nobody looks at.
 async function pollMedia() {
-  try {
-    const r = await fetch("/api/media", { cache: "no-store" });
-    if (r.ok) renderMedia(await r.json());
-  } catch (err) { /* the state poll reports a dead service */ }
+  clearTimeout(mediaTimer);
+  mediaTimer = null;
+  if (!mediaOpen) return;
+  if (!document.hidden) {
+    try {
+      const r = await fetch("/api/media" + (mediaRev == null ? "" : "?rev=" + mediaRev),
+                            { cache: "no-store" });
+      if (r.ok) renderMedia(await r.json());
+    } catch (err) { /* the state poll reports a dead service */ }
+  }
+  if (mediaOpen && !mediaTimer) mediaTimer = setTimeout(pollMedia, 1000);
 }
+document.addEventListener("visibilitychange", () => {
+  if (mediaOpen && !document.hidden) pollMedia();
+});
 
 function fmtSize(n) {
   if (!n) return "--";
@@ -1142,11 +1122,15 @@ function fmtSize(n) {
 function fmtDuration(seconds) {
   if (seconds == null) return "";
   const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60);
-  return h ? h + " h " + m + " min" : m ? m + " min" : "under a minute";
+  return h ? h + " h " + m + " min" : m + " min";
 }
 
 function renderMedia(m) {
-  const items = m.items || [];
+  if (m.items) {
+    mediaItems = m.items;
+    mediaRev = m.rev;
+  }
+  const items = mediaItems;
   const total = items.reduce((sum, i) => sum + i.size, 0);
   const done = items.filter((i) => i.state === "done").length;
 
@@ -1168,100 +1152,97 @@ function renderMedia(m) {
 
   el("media-total").classList.toggle("show", busy);
   if (busy) {
-    const queuedSize = items.filter((i) => i.state === "queued" || i.state === "active")
-                            .reduce((sum, i) => sum + i.size, 0);
     el("media-total-text").textContent = m.queued + (m.queued === 1 ? " file" : " files")
       + " to go, " + fmtSize(m.remaining)
       + (m.rate ? " · " + (m.rate * 8 / 1e6).toFixed(0) + " Mbit/s" : " · waiting for the camera")
-      + (m.eta != null ? " · about " + fmtDuration(m.eta) + " left" : "");
+      + (m.eta == null ? "" : m.eta < 60 ? " · less than a minute left"
+                                         : " · about " + fmtDuration(m.eta) + " left");
     el("media-total-bar").style.width =
-      (queuedSize ? 100 * (queuedSize - m.remaining) / queuedSize : 0).toFixed(1) + "%";
+      (m.queued_size ? 100 * (m.queued_size - m.remaining) / m.queued_size : 0).toFixed(1) + "%";
   }
 
-  const list = el("media-list");
-  const key = items.map((i) => i.id).join(",") + "|" + m.listed;
-  if (key !== mediaRows) {
-    mediaRows = key;
-    list.innerHTML = "";
-    if (m.listed && !items.length) {
-      const empty = document.createElement("li");
-      empty.id = "media-empty";
-      empty.style.display = "block";
-      empty.textContent = "The cards hold no files.";
-      list.appendChild(empty);
-    }
-    for (const item of items) {
-      const li = document.createElement("li");
-      li.dataset.id = item.id;
-      const img = document.createElement("img");
-      img.className = "thumb";
-      img.alt = "";
-      const text = document.createElement("div");
-      const name = document.createElement("div");
-      name.className = "name";
-      name.textContent = item.name;
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      const bar = document.createElement("div");
-      bar.className = "bar";
-      bar.appendChild(document.createElement("i"));
-      text.append(name, meta, bar);
-      const button = document.createElement("button");
-      button.className = "btn btn--on-ink";
-      button.type = "button";
-      button.addEventListener("click", () => mediaCommand("/api/media/download", { ids: [item.id] }));
-      li.append(img, text, button);
-      list.appendChild(li);
-    }
-  }
-
+  if (m.items) buildRows(items, m.listed);
   for (const item of items) {
-    const li = list.querySelector('li[data-id="' + CSS.escape(item.id) + '"]');
-    if (!li) continue;
-    const img = li.querySelector(".thumb");
-    if (item.thumb && !img.getAttribute("src")) {
-      img.src = "/api/media/thumb/" + encodeURIComponent(item.id);
-    }
-    const parts = [];
-    if (item.slot) parts.push("Card " + item.slot.replace(/^sd/, ""));
-    if (item.duration) parts.push(item.duration);
-    parts.push(fmtSize(item.size));
-    const percent = item.size ? 100 * item.done / item.size : 0;
-    if (item.state === "active") parts.push("downloading, " + percent.toFixed(1) + " %");
-    else if (item.state === "queued") parts.push("waiting");
-    else if (item.state === "done") parts.push("saved");
-    else if (item.state === "failed") parts.push("failed: " + item.error);
-    const meta = li.querySelector(".meta");
-    meta.textContent = parts.join(" · ");
-    meta.classList.toggle("failed", item.state === "failed");
-    const bar = li.querySelector(".bar");
-    bar.style.visibility = item.state === "active" ? "visible" : "hidden";
-    bar.firstChild.style.width = percent.toFixed(1) + "%";
-    const button = li.querySelector(".btn");
-    button.textContent = item.state === "done" ? "Saved"
-                       : item.state === "failed" ? "Try again" : "Download";
-    button.disabled = !!m.folder_problem
-                      || ["done", "queued", "active"].includes(item.state);
+    const progress = (m.progress || {})[item.id];
+    if (progress != null) item.done = progress;
+    renderRow(item, !!m.folder_problem);
   }
 }
 
-async function mediaCommand(path, payload) {
-  try {
-    const r = await fetch(path, {
-      method: "POST",
-      headers: payload ? { "Content-Type": "application/json" } : {},
-      body: payload ? JSON.stringify(payload) : undefined
-    });
-    if (!r.ok) {
-      let detail = "HTTP " + r.status;
-      try { detail = (await r.json()).detail || detail; } catch (e) { /* keep the status */ }
-      flash(detail);
-    }
-  } catch (err) {
-    flash("Command not delivered: " + (err && err.message || err));
+// The rows are rebuilt only when the list of files changed, so a button
+// under the finger stays where it is.
+function buildRows(items, listed) {
+  const ids = items.map((i) => i.id);
+  if (ids.length === mediaRows.size && ids.every((id) => mediaRows.has(id))) return;
+  const list = el("media-list");
+  list.innerHTML = "";
+  mediaRows = new Map();
+  if (listed && !items.length) {
+    const empty = document.createElement("li");
+    empty.id = "media-empty";
+    empty.textContent = "The cards hold no files.";
+    list.appendChild(empty);
   }
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.dataset.id = item.id;
+    const img = document.createElement("img");
+    img.className = "thumb";
+    img.alt = "";
+    const text = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "name";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.appendChild(document.createElement("i"));
+    text.append(name, meta, bar);
+    const button = document.createElement("button");
+    button.className = "btn btn--on-ink";
+    button.type = "button";
+    button.addEventListener("click", () => mediaCommand("/api/media/download", { ids: [item.id] }));
+    li.append(img, text, button);
+    list.appendChild(li);
+    mediaRows.set(item.id, { img, name, meta, bar, button, shown: "" });
+  }
+}
+
+// Written only when something the row shows changed: of thousands of rows,
+// a download moves one.
+function renderRow(item, folderProblem) {
+  const row = mediaRows.get(item.id);
+  if (!row) return;
+  const percent = item.size ? (100 * item.done / item.size).toFixed(1) : "0.0";
+  const shown = [item.name, item.size, item.state, item.error, item.thumb,
+                 item.state === "active" ? percent : "", folderProblem].join("|");
+  if (shown === row.shown) return;
+  row.shown = shown;
+  if (item.thumb && !row.img.getAttribute("src")) {
+    row.img.src = "/api/media/thumb/" + encodeURIComponent(item.id);
+  }
+  row.name.textContent = item.name;
+  const parts = [];
+  if (item.slot) parts.push("Card " + item.slot.replace(/^sd/, ""));
+  if (item.duration) parts.push(item.duration);
+  parts.push(fmtSize(item.size));
+  if (item.state === "active") parts.push("downloading, " + percent + " %");
+  else if (item.state === "queued") parts.push("waiting");
+  else if (item.state === "done") parts.push("saved");
+  else if (item.state === "failed") parts.push("failed: " + item.error);
+  row.meta.textContent = parts.join(" · ");
+  row.meta.classList.toggle("failed", item.state === "failed");
+  row.bar.style.visibility = item.state === "active" ? "visible" : "hidden";
+  row.bar.firstChild.style.width = percent + "%";
+  row.button.textContent = item.state === "done" ? "Saved"
+                         : item.state === "failed" ? "Try again" : "Download";
+  row.button.disabled = folderProblem || ["done", "queued", "active"].includes(item.state);
+}
+
+async function mediaCommand(path, payload) {
+  await post(path, payload);
   await poll();
-  if (mediaOpen) pollMedia();
+  pollMedia();
 }
 
 el("cards").addEventListener("click", () => mediaCommand("/api/media/open"));

@@ -31,6 +31,14 @@ wait_for_exit() {
     return 1
 }
 
+wait_healthy() {
+    for _ in $(seq 1 30); do
+        [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] && return 0
+        sleep 2
+    done
+    fail "not healthy"
+}
+
 # HTTP request from inside the container; prints the status code.
 request() { # path
     docker exec -i "$NAME" python3 - "$1" <<'PY'
@@ -78,11 +86,7 @@ refused 'PUID and PGID must be numeric' -e PUID=abc -e LUMIX_CAMERA_IP="$CAMERA"
 echo "== start"
 docker run -d --name "$NAME" "${HARDENING[@]}" -e PUID="$PUID" -e PGID="$PGID" \
     -e TZ=Europe/Berlin -e LUMIX_CAMERA_IP="$CAMERA" "$IMAGE" >/dev/null
-for _ in $(seq 1 30); do
-    [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] && break
-    sleep 2
-done
-[[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] || fail "not healthy"
+wait_healthy
 in_log 'BASED ON IMAGES FROM LINUXSERVER\.IO' || fail "the start banner is not ours"
 if in_log 'Based on images from linuxserver\.io'; then fail "the base image's banner is still shown"; fi
 in_log '^\{"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}(Z|[+-][0-9:]{5})","level":"INFO","event":"starting","version":"[0-9]+\.[0-9]+\.[0-9]+"' \
@@ -178,10 +182,7 @@ DOWNLOADS=$(mktemp -d)
 docker run --rm -v "$DOWNLOADS":/d --entrypoint chown "$IMAGE" 0:0 /d
 docker run -d --name "$NAME" "${HARDENING[@]}" -e PUID="$PUID" -e PGID="$PGID" \
     -e LUMIX_CAMERA_IP="$CAMERA" -v "$DOWNLOADS":/downloads "$IMAGE" >/dev/null
-for _ in $(seq 1 30); do
-    [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] && break
-    sleep 2
-done
+wait_healthy
 [[ $(media folder_problem) == "" ]] || fail "a mapped folder is refused: '$(media folder_problem)'"
 [[ $(docker exec "$NAME" stat -c %u /downloads) == "$PUID" ]] || fail "/downloads was not handed to abc"
 docker stop -t 30 "$NAME" >/dev/null

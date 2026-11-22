@@ -259,6 +259,33 @@ def shutter_values() -> list[str]:
     return [f"{math.ceil(256 * (39 - index) / 3)}/256" for index in range(len(SHUTTER_TIMES))]
 
 
+def shutter_labels() -> list[str]:
+    return [f"1/{time_:g}" for time_ in SHUTTER_TIMES]
+
+
+def _tv(value: str) -> float | None:
+    try:
+        top, bottom = value.split("/")
+        return int(top) / int(bottom)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def nearest_shutter(value: str, series: list[str]) -> str:
+    """The entry of the series a value read from the camera stands for.
+
+    The camera's rounding of a third is not always ours; a value within a
+    tenth of a stop of an entry is that entry. Anything else stays as it is.
+    """
+    tv = _tv(value)
+    if tv is None:
+        return value
+    for entry in series:
+        if abs((_tv(entry) or 0.0) - tv) < 0.1:
+            return entry
+    return value
+
+
 def focus_from_reply(reply: str) -> dict | None:
     """Lens position from the reply to a focus step.
 
@@ -416,6 +443,7 @@ class Controller:
         # The settings of the bar: current value and what may be chosen.
         self._settings: dict[str, str] = {}
         self._setting_values: dict[str, list[str]] = {"shtrspeed": shutter_values()}
+        self._setting_turn = 0
         # Lens position, known only after a focus step: the camera has no
         # call that just reads it.
         self._focus: dict | None = None
@@ -464,8 +492,10 @@ class Controller:
                         "at": time.time(),
                     }
                 log.warning("recording_ended_by_camera", extra={"reason": value})
-        # Read the state right away, not up to a poll interval later.
-        self._last_poll = 0.0
+            # Read the state right away, not up to a poll interval later.
+            # Only for these: the Sync reports around a recording come in
+            # bursts, at the moment the camera is busiest.
+            self._last_poll = 0.0
 
     def stop(self) -> None:
         """Ordered shutdown. Must run on every path that ends the process.
@@ -774,14 +804,7 @@ class Controller:
         if mode == "rec":
             self._recmode_tried = False
             self._recmode_error = ""
-            for name in (*self.BAR_SETTINGS, "focusmode"):
-                try:
-                    value = self.camera.get_setting(name)
-                except LumixError as exc:
-                    log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
-                    continue
-                with self._lock:
-                    self._settings[name] = value
+            self._read_settings(state.recording)
             self._set(status="online", error="")
             return
 
@@ -820,6 +843,28 @@ class Controller:
         elif self._recmode_error:
             reason += f". Mode change refused: {self._recmode_error}"
         self._set(status="standby", error=reason)
+
+    def _read_settings(self, recording: bool) -> None:
+        """Read the bar's settings. While a recording runs only one per poll,
+        in turn: every request is one more thing the camera has to answer."""
+        names = (*self.BAR_SETTINGS, "focusmode")
+        if recording:
+            self._setting_turn = (self._setting_turn + 1) % len(names)
+            names = (names[self._setting_turn],)
+        for name in names:
+            try:
+                value = self.camera.get_setting(name)
+            except NotReachable:
+                # Not a refusal: the keeper's handling of a dropout applies,
+                # instead of one timeout after the other in here.
+                raise
+            except LumixError as exc:
+                log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
+                continue
+            if name == "shtrspeed":
+                value = nearest_shutter(value, self._setting_values["shtrspeed"])
+            with self._lock:
+                self._settings[name] = value
 
     def _hold_playback(self, mode: str) -> None:
         """Keep the camera in playback while the media view is open."""
@@ -955,9 +1000,19 @@ class Controller:
         log.warning("recording_resumed", extra={
             "attempt": self._resumes, "after_s": round(since_connect, 1)})
 
-    def rec_start(self) -> None:
+    def _not_in_cards(self) -> None:
+        """Commands for record mode are refused while the cards are open: what
+        they do to a camera in playback, in the middle of a download, is
+        unmeasured."""
         if self._media:
-            raise LumixError("The cards are open: close them before recording")
+            raise LumixError("The cards are open: close them first")
+
+    def autofocus(self) -> None:
+        self._not_in_cards()
+        self.camera.autofocus()
+
+    def rec_start(self) -> None:
+        self._not_in_cards()
         self.camera.rec_start()
         with self._lock:
             self._rec_end = None
@@ -1054,6 +1109,7 @@ class Controller:
         exposure compensation -5 became -3). So the value is read back and
         the read value is returned.
         """
+        self._not_in_cards()
         if name not in self.BAR_SETTINGS:
             raise LumixError(f"{name!r} can't be set here")
         allowed = self._setting_values.get(name)
@@ -1062,6 +1118,8 @@ class Controller:
         self.camera.set_setting(name, value)
         time.sleep(0.4)
         actual = self.camera.get_setting(name)
+        if name == "shtrspeed":
+            actual = nearest_shutter(actual, self._setting_values["shtrspeed"])
         with self._lock:
             self._settings[name] = actual
         return actual
@@ -1123,9 +1181,12 @@ class Controller:
 
     def snapshot_settings(self) -> dict:
         with self._lock:
-            return {name: {"value": self._settings.get(name, ""),
-                           "values": self._setting_values.get(name, [])}
-                    for name in self.BAR_SETTINGS}
+            settings = {name: {"value": self._settings.get(name, ""),
+                               "values": self._setting_values.get(name, [])}
+                        for name in self.BAR_SETTINGS}
+        # The camera names no shutter speeds; the names come with the series.
+        settings["shtrspeed"]["labels"] = shutter_labels()
+        return settings
 
     def snapshot(self) -> dict:
         """Current view of the world, safe to serialise at any time."""
@@ -1325,13 +1386,27 @@ def _controller(request: Request) -> Controller:
     return controller
 
 
-async def _command(fn: Callable[[], None]) -> dict:
+async def _call(fn: Callable, *args):
     """Run a blocking camera call off the event loop and map its errors."""
     try:
-        await run_in_threadpool(fn)
+        return await run_in_threadpool(fn, *args)
     except LumixError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _command(fn: Callable[[], None]) -> dict:
+    await _call(fn)
     return {"ok": True}
+
+
+async def _json_object(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body is not JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body is not an object")
+    return payload
 
 
 @app.get("/")
@@ -1358,7 +1433,7 @@ async def health(request: Request) -> JSONResponse:
 
 @app.post("/api/af", **COMMAND)
 async def autofocus(request: Request) -> dict:
-    return await _command(_controller(request).camera.autofocus)
+    return await _command(_controller(request).autofocus)
 
 
 @app.post("/api/rec/start", **COMMAND)
@@ -1374,29 +1449,12 @@ async def rec_stop(request: Request) -> dict:
 @app.post("/api/iso", **COMMAND)
 async def set_iso(request: Request) -> dict:
     """Set the sensitivity. Reports the value the camera really adopted."""
-    controller = _controller(request)
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Body is not JSON") from None
-    value = str(payload.get("value", "")).strip() if isinstance(payload, dict) else ""
+    payload = await _json_object(request)
+    value = str(payload.get("value", "")).strip()
     if not value:
         raise HTTPException(status_code=400, detail="No ISO value given")
-    try:
-        actual = await run_in_threadpool(controller.set_setting, "iso", value)
-    except LumixError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    actual = await _call(_controller(request).set_setting, "iso", value)
     return {"ok": True, "iso": actual}
-
-
-async def _json_object(request: Request) -> dict:
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Body is not JSON") from None
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Body is not an object")
-    return payload
 
 
 @app.post("/api/setting", **COMMAND)
@@ -1410,10 +1468,7 @@ async def set_setting(request: Request) -> dict:
     name, value = payload.get("name"), payload.get("value")
     if not isinstance(name, str) or not isinstance(value, str) or not name or not value:
         raise HTTPException(status_code=400, detail="Give name and value as text")
-    try:
-        actual = await run_in_threadpool(controller.set_setting, name, value)
-    except LumixError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    actual = await _call(controller.set_setting, name, value)
     return {"ok": True, "name": name, "value": actual}
 
 
@@ -1437,10 +1492,7 @@ async def focus_step(request: Request) -> dict:
     direction = payload.get("direction")
     if direction not in ("near", "far"):
         raise HTTPException(status_code=400, detail='direction must be "near" or "far"')
-    try:
-        focus = await run_in_threadpool(controller.focus_step, direction == "near")
-    except LumixError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    focus = await _call(controller.focus_step, direction == "near")
     return {"ok": True, "focus": focus}
 
 
@@ -1454,8 +1506,10 @@ def _media(request: Request) -> MediaManager:
 
 
 @app.get("/api/media")
-async def media_state(request: Request) -> dict:
-    return await run_in_threadpool(_media(request).snapshot)
+async def media_state(request: Request, rev: int | None = None) -> dict:
+    """The cards view's state. With `?rev=` set to the revision of the last
+    reply, the list of files is left out while it is unchanged."""
+    return await run_in_threadpool(_media(request).snapshot, rev)
 
 
 @app.post("/api/media/open", **COMMAND)
@@ -1468,13 +1522,9 @@ async def media_close(request: Request) -> dict:
     """Close the view. A running download is stopped and continues next time."""
     controller, media = _controller(request), _media(request)
 
-    def close() -> None:
-        # The worker first: the slot is put back only once nothing is being
-        # fetched from the other card any more.
-        media.closed()
-        controller.media_close()
-
-    return await _command(close)
+    # The worker first: the slot is put back only once nothing is being
+    # fetched from the other card any more.
+    return await _command(lambda: media.close(controller.media_close))
 
 
 @app.post("/api/media/refresh", **COMMAND)
@@ -1486,22 +1536,13 @@ async def media_refresh(request: Request) -> dict:
 async def media_download(request: Request) -> dict:
     """Queue files: `{"ids": [...]}` for some, `{"all": true}` for everything."""
     media = _media(request)
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Body is not JSON") from None
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Body is not an object")
+    payload = await _json_object(request)
     ids = payload.get("ids")
     if payload.get("all") is True:
         ids = None
     elif not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
         raise HTTPException(status_code=400, detail="Give ids as a list, or all: true")
-    try:
-        queued = await run_in_threadpool(media.enqueue, ids)
-    except LumixError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"ok": True, "queued": queued}
+    return {"ok": True, "queued": await _call(media.enqueue, ids)}
 
 
 @app.post("/api/media/cancel", **COMMAND)

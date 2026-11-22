@@ -62,8 +62,6 @@ EXPOSE 49199/udp
 # The camera reports the start and end of a recording here.
 EXPOSE 49198/tcp
 
-# No VOLUME: the app writes no files.
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python3 -c "import urllib.request,os,sys; \
 sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('LUMIX_WEB_PORT','8080')+'/api/health', timeout=4).status==200 else 1)"

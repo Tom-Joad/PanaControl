@@ -21,18 +21,14 @@ from urllib.parse import urljoin
 import httpx
 
 from .camera import DESCRIPTOR_PATH, DESCRIPTOR_PORT
+from .media import DLNA_AGENT, _local
 
 log = logging.getLogger("lumixremote.events")
 
-AGENT = "Panasonic MIL DLNA CP UPnP/1.0"
 CALLBACK_PATH = "/Camera/event"
 # The camera grants 300 seconds; renewed well before that.
 TIMEOUT_HEADER = "Second-300"
 MAX_BODY = 64 * 1024
-
-
-def _local(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
 
 
 def event_url(descriptor_xml: str, base: str) -> str | None:
@@ -201,7 +197,7 @@ class EventSubscriber:
         callback = f"<http://{host}:{self.port}{CALLBACK_PATH}>"
         r = self._http.request("SUBSCRIBE", url, headers={
             "CALLBACK": callback, "NT": "upnp:event",
-            "TIMEOUT": TIMEOUT_HEADER, "User-Agent": AGENT})
+            "TIMEOUT": TIMEOUT_HEADER, "User-Agent": DLNA_AGENT})
         sid = r.headers.get("SID", "")
         if r.status_code != 200 or not sid:
             log.info("events_refused", extra={"status": r.status_code})
