@@ -1467,8 +1467,11 @@ async def media_open(request: Request) -> dict:
 @app.post("/api/media/close", **COMMAND)
 async def media_close(request: Request) -> dict:
     """Close the view. A running download is stopped and continues next time."""
-    controller, media = _controller(request), _media(request)
+    return await _close_cards(request)
 
+
+async def _close_cards(request: Request) -> dict:
+    controller, media = _controller(request), _media(request)
     # The worker first: the slot is put back only once nothing is being
     # fetched from the other card any more.
     return await _command(lambda: media.close(controller.media_close))
@@ -1490,6 +1493,30 @@ async def media_download(request: Request) -> dict:
     elif not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
         raise HTTPException(status_code=400, detail="Give ids as a list, or all: true")
     return {"ok": True, "queued": await _call(media.enqueue, ids)}
+
+
+@app.post("/api/media/sync", status_code=202, **COMMAND)
+async def media_sync_start(request: Request) -> dict:
+    """For scripts: save everything from the cards that is not in the
+    download folder yet. Opens the cards, downloads, and closes them again;
+    `GET /api/media/sync` tells how far it is."""
+    controller, media = _controller(request), _media(request)
+    return await _call(media.start_sync, controller.media_open, controller.media_close)
+
+
+@app.get("/api/media/sync")
+async def media_sync_state(request: Request) -> dict:
+    return await run_in_threadpool(_media(request).sync_state)
+
+
+@app.post("/api/media/sync/cancel", **COMMAND)
+async def media_sync_cancel(request: Request) -> dict:
+    """End a running run and give the camera back; what was fetched of the
+    current file stays as a part file and is continued next time. Without a
+    run nothing happens: a cards view somebody has open stays open."""
+    if _media(request).sync_state()["status"] != "running":
+        return {"ok": True}
+    return await _close_cards(request)
 
 
 @app.post("/api/media/cancel", **COMMAND)

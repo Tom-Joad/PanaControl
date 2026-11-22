@@ -123,6 +123,42 @@ download folder, **Download all** everything that is not there yet.
 * Used on the DC-GH6 with MOV and MP4 clips on both cards. Photos and RAW
   files go the same way but were not on the cards.
 
+### From a script
+
+A script can have everything saved that is on the cards and not yet in the
+download folder, without the interface:
+
+| Call | Effect |
+|---|---|
+| `POST /api/media/sync` | Start a run: open the cards, save what is missing from both slots, close the cards again. Answers `202` with the state; `409` while a recording runs, a run is under way or no folder is mapped |
+| `GET /api/media/sync` | The running or the last run: `status` (`idle`, `running`, `done`, `failed`, `cancelled`), `error`, `started`, `finished` and `folder`. While it runs also `step` (`listing`, `downloading`), `counts` (how many files are `saved`, `present`, `failed`, `queued`, `active`, `pending`), `remaining` bytes and `rate` in bytes per second. Once it has ended, `files` names every file with `name`, `card`, `size` and its `result`: `saved` in this run, `present` (was in the folder already), `failed` (with `error`) or `skipped` (not reached) |
+| `POST /api/media/sync/cancel` | End the run and give the camera back; the part file of the current download stays and is continued next time |
+
+The files land in the download folder, under the names the camera gave them.
+During a run the camera is in playback, as with the cards open in the
+interface, and the interface shows the progress. **Cancel** or **Back to live
+view** there ends the run as `cancelled`.
+
+```bash
+curl -X POST http://192.0.2.20:8080/api/media/sync
+until curl -s http://192.0.2.20:8080/api/media/sync | grep -q '"status":"\(done\|failed\|cancelled\)"'; do sleep 10; done
+curl -s http://192.0.2.20:8080/api/media/sync
+```
+
+```powershell
+$base = "http://192.0.2.20:8080"
+Invoke-RestMethod -Method Post "$base/api/media/sync" | Out-Null
+do {
+    Start-Sleep -Seconds 10
+    $run = Invoke-RestMethod "$base/api/media/sync"
+} while ($run.status -eq "running")
+if ($run.status -ne "done") { throw "Download $($run.status): $($run.error)" }
+$run.files | Where-Object result -eq "saved" | ForEach-Object name
+```
+
+Like the rest of the interface this needs no token: whoever reaches the app
+can already do the same there. See [Security](#security).
+
 ### Exposure and focus
 
 The bar shows what every take needs: **ISO** and **Shutter** to set,
@@ -270,6 +306,7 @@ the camera.
 | `POST /api/media/open`, `/close` | Open the cards (camera to playback) and close them again |
 | `POST /api/media/download` | Queue files, JSON `{"ids": ["..."]}` or `{"all": true}` |
 | `POST /api/media/cancel` | Stop the running download and empty the queue |
+| `POST /api/media/sync`, `GET /api/media/sync`, `POST /api/media/sync/cancel` | A whole run for scripts, see [From a script](#from-a-script) |
 | `POST /api/media/refresh` | Read the cards again |
 | `GET /api/media/thumb/<id>` | Preview picture of a file |
 

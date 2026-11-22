@@ -1840,3 +1840,148 @@ def test_commands_for_record_mode_are_refused_while_the_cards_are_open(viewer):
     for command in (controller.autofocus, lambda: controller.set_setting("iso", "800")):
         with pytest.raises(LumixError, match="cards are open"):
             command()
+
+
+# ----------------------------------------------------- a run for scripts ---
+
+class SyncSession(FakeSession):
+    """A controller whose media mode the run switches on and off."""
+
+    def __init__(self):
+        super().__init__()
+        self.media_wanted = self.media_ready = False
+        self.calls: list[str] = []
+
+    def enter(self):
+        self.calls.append("enter")
+        self.media_wanted = self.media_ready = True
+
+    def leave(self):
+        self.calls.append("leave")
+        self.media_wanted = self.media_ready = False
+
+
+def test_a_run_saves_what_is_missing_and_gives_the_camera_back(card, tmp_path):
+    session = SyncSession()
+    manager = card(FakeCard(), session)
+    state = manager.start_sync(session.enter, session.leave)
+    assert state["status"] == "running" and state["step"] == "listing" and state["files"] == []
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    state = manager.sync_state()
+    assert state["files"] == [{"name": "P1000001.MOV", "card": "", "size": len(CLIP),
+                               "result": "saved", "error": ""}]
+    assert state["finished"] >= state["started"] and state["folder"] == str(tmp_path)
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+    assert session.calls == ["enter", "leave"]
+
+    # A second run finds the file there and fetches nothing.
+    fake_requests_before = len(list(tmp_path.iterdir()))
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    assert manager.sync_state()["files"][0]["result"] == "present"
+    assert len(list(tmp_path.iterdir())) == fake_requests_before
+
+
+def test_a_run_is_refused_while_one_is_under_way_or_the_camera_records(card):
+    session = SyncSession()
+
+    class Slow(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                time.sleep(0.5)
+            return super().__call__(request)
+
+    manager = card(Slow(), session)
+    manager.start_sync(session.enter, session.leave)
+    with pytest.raises(LumixError, match="already under way"):
+        manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+
+    def recording():
+        raise LumixError("A recording is running: stop it before opening the cards")
+
+    with pytest.raises(LumixError, match="recording is running"):
+        manager.start_sync(recording, session.leave)
+    assert manager.sync_state()["status"] == "done"     # the last run stays readable
+
+
+def test_a_cancelled_run_keeps_the_part_file_and_says_so(card, tmp_path, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.5)
+    session = SyncSession()
+    manager = card(FakeCard(cut_after=2000), session)
+    manager.start_sync(session.enter, session.leave)
+    part = tmp_path / f"P1000001.MOV.{len(CLIP)}.part"
+    _wait(lambda: part.exists() and part.stat().st_size == 2000)
+    manager.close(session.leave)
+    state = manager.sync_state()
+    assert state["status"] == "cancelled" and part.stat().st_size == 2000
+    # What a finished run did not get to has one name, however it ended.
+    assert [f["result"] for f in state["files"]] == ["skipped"]
+    assert session.calls == ["enter", "leave"]
+
+
+def test_a_run_that_cannot_save_a_file_ends_failed_with_the_reason(card, tmp_path, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "RESERVE", 10 ** 18)    # never enough room
+    session = SyncSession()
+    manager = card(FakeCard(), session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "failed")
+    state = manager.sync_state()
+    assert "not enough space" in state["error"]
+    assert state["files"][0]["result"] == "failed"
+    assert session.calls == ["enter", "leave"]
+
+
+def test_a_run_ends_when_a_recording_closes_the_cards(card, monkeypatch):
+    session = SyncSession()
+    release = threading.Event()
+
+    class Slow(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                release.wait(5)
+            return super().__call__(request)
+
+    manager = card(Slow(), session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.snapshot()["listing"])
+    # The controller leaves the media mode by itself: started on the camera.
+    session.media_wanted = session.media_ready = False
+    release.set()
+    _wait(lambda: manager.sync_state()["status"] == "failed")
+    assert "recording started" in manager.sync_state()["error"]
+    # And the next run can start.
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+
+
+def test_a_run_gives_up_when_the_camera_never_reaches_playback(card, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "SYNC_READY_WAIT", 0.3)
+    session = SyncSession()
+
+    def enter():
+        session.calls.append("enter")
+        session.media_wanted = True         # wanted, but never ready
+
+    manager = card(FakeCard(), session)
+    manager.start_sync(enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "failed", 8.0)
+    assert "did not reach playback" in manager.sync_state()["error"]
+    assert session.calls == ["enter", "leave"]
+
+
+def test_the_state_of_a_run_is_readable_before_the_first_one(card):
+    state = card(FakeCard()).sync_state()
+    assert (state["status"], state["files"], state["error"]) == ("idle", [], "")
+
+
+def test_a_running_run_reports_counts_instead_of_every_file(card, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.5)
+    session = SyncSession()
+    manager = card(FakeCard(cut_after=2000), session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state().get("counts") == {"active": 1})
+    state = manager.sync_state()
+    assert state["files"] == [] and state["remaining"] > 0
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    assert "counts" not in manager.sync_state()

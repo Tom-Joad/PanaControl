@@ -268,6 +268,22 @@ class Cancelled(Exception):
     """The running download was cancelled or the media view was closed."""
 
 
+@dataclass
+class SyncRun:
+    """A run a script started: what it reports, and what it needs meanwhile."""
+
+    status: str = "idle"        # idle, running, done, failed or cancelled
+    step: str = ""              # listing or downloading, while it runs
+    error: str = ""
+    started: float | None = None
+    finished: float | None = None
+    files: list[dict] = field(default_factory=list)     # filled when it ends
+    leave: Callable[[], None] | None = None
+    present: set[str] = field(default_factory=set)      # in the folder before
+    unready_since: float | None = None
+    list_failures: int = 0
+
+
 class MediaManager:
     """Lists the cards and works through the download queue."""
 
@@ -281,6 +297,10 @@ class MediaManager:
     # The listing and the file addresses refer to the active card slot. After
     # a change the listing was read two seconds later on the device.
     SLOT_SETTLE = 2.0
+    # A run started by a script: how long the camera may take to reach
+    # playback, and how often the listing may fail, before the run gives up.
+    SYNC_READY_WAIT = 120.0
+    SYNC_LIST_TRIES = 5
 
     def __init__(self, session: Session, camera_ip: str,
                  folder: pathlib.Path | None,
@@ -313,6 +333,8 @@ class MediaManager:
         # knows that its result is nobody's any more.
         self._generation = 0
         self._folder_checked = 0.0
+        # The run a script started, or the last one: see sync_state().
+        self._sync = SyncRun()
         self._folder_state: tuple[str, int | None] = ("", None)
         self._thumbs: dict[str, bytes] = {}
         # The slot this thread last made active; None when unknown.
@@ -346,6 +368,8 @@ class MediaManager:
         deadline = time.monotonic() + wait
         with self._cond:
             self._closed = True
+            if self._sync.status == "running":
+                self._end_sync_locked("cancelled", "The cards were closed")
             self._reset_locked()
             self._cond.notify_all()
             while self._working and time.monotonic() < deadline:
@@ -356,6 +380,113 @@ class MediaManager:
             with self._cond:
                 self._closed = False
                 self._cond.notify_all()
+
+    # ------------------------------------------------------------------ #
+    # A whole run for a script: open the cards, save everything that is
+    # not in the folder yet, close the cards again.
+    # ------------------------------------------------------------------ #
+
+    def start_sync(self, enter: Callable[[], None], leave: Callable[[], None]) -> dict:
+        """Start a run. `enter` puts the camera into the media mode (and
+        refuses while it records), `leave` takes it out again at the end."""
+        problem = folder_problem(self.folder)
+        if problem:
+            raise LumixError(problem)
+        with self._cond:
+            if self._sync.status == "running":
+                raise LumixError("A run is already under way")
+            if self.busy:
+                raise LumixError("A download is already under way")
+        enter()
+        with self._cond:
+            self._sync = SyncRun(status="running", step="listing",
+                                 started=time.time(), leave=leave)
+            self._relist = True
+            self._cond.notify_all()
+        log.info("media_sync_started")
+        return self.sync_state()
+
+    def sync_state(self) -> dict:
+        """The running or the last run. While it runs: how many files are in
+        which state and how much is left; once it has ended: every file with
+        what became of it."""
+        with self._cond:
+            run = self._sync
+            state = {"status": run.status, "step": run.step, "error": run.error,
+                     "started": run.started, "finished": run.finished,
+                     "folder": str(self.folder) if self.folder else "",
+                     "files": run.files}
+            if run.status == "running":
+                results = [self._result_locked(i, final=False) for i in self._items.values()]
+                state["counts"] = {r: results.count(r) for r in sorted(set(results))}
+                _, state["remaining"], state["rate"] = self._progress_locked()
+            return state
+
+    def _result_locked(self, item: MediaItem, final: bool) -> str:
+        """What became of a file in the run. A finished run knows three
+        outcomes besides `saved`; a running one also says what is waiting."""
+        if item.state == "done":
+            return "present" if item.id in self._sync.present else "saved"
+        if item.state == "failed":
+            return "failed"
+        return "skipped" if final else item.state or "pending"
+
+    def _end_sync_locked(self, status: str, error: str = "") -> None:
+        """Freeze the run's result. Before any reset: it reads the items."""
+        run = self._sync
+        run.status, run.step, run.error, run.finished = status, "", error, time.time()
+        run.files = [{"name": i.name, "card": i.slot, "size": i.size,
+                      "result": self._result_locked(i, final=True), "error": i.error}
+                     for i in self._items.values()]
+        run.leave = None
+        log.info("media_sync_ended", extra={"status": status, "error": error})
+
+    def _sync_job_locked(self):
+        """What the run needs done next, if anything; called by the worker."""
+        run = self._sync
+        if run.status != "running":
+            return None
+        if not self.session.media_wanted:
+            # The controller left the media mode by itself.
+            self._end_sync_locked("failed", "The cards were closed: a recording started")
+            return None
+        if run.step == "downloading" and not self._queue:
+            # Decided before asking whether the camera is ready: a download
+            # that gave up on a silent camera has to end the run too.
+            failed = [i for i in self._items.values() if i.state == "failed"]
+            # A failure that is not about space empties the queue; what was
+            # left then counts as not saved either.
+            if failed or any(i.state != "done" for i in self._items.values()):
+                reason = failed[0].error if failed else "not every file was saved"
+                return lambda: self._finish_sync("failed", reason)
+            return lambda: self._finish_sync("done")
+        if not self.session.media_ready:
+            now = time.monotonic()
+            if run.unready_since is None:
+                run.unready_since = now
+            if run.step == "listing" and now - run.unready_since > self.SYNC_READY_WAIT:
+                return lambda: self._finish_sync("failed", "The camera did not reach playback")
+            return None
+        run.unready_since = None
+        if run.step == "listing" and self._listed and not self._relist:
+            run.present = {i.id for i in self._items.values() if i.state == "done"}
+            self._enqueue_locked(list(self._items))
+            run.step = "downloading"
+        if run.step == "listing" and run.list_failures >= self.SYNC_LIST_TRIES:
+            return lambda: self._finish_sync("failed", self._list_error)
+        return None
+
+    def _finish_sync(self, status: str, error: str = "") -> None:
+        """End the run and give the camera back; runs in the worker."""
+        with self._cond:
+            leave = self._sync.leave
+            self._end_sync_locked(status, error)
+            self._reset_locked()
+        if leave:
+            try:
+                leave()
+            except LumixError as exc:
+                log.warning("media_sync_leave_failed", extra={"error": str(exc)})
 
     def _reset_locked(self) -> None:
         self._cancel_locked()
@@ -381,21 +512,27 @@ class MediaManager:
         with self._cond:
             if not self._listed:
                 raise LumixError("The card has not been listed yet")
-            wanted = list(self._items) if ids is None else ids
-            added = 0
-            for item_id in wanted:
-                item = self._items.get(item_id)
-                if item is None or item.state in ("queued", "active", "done"):
-                    continue
-                item.state, item.error = "queued", ""
-                self._changed_locked(item)
-                self._queue.append(item_id)
-                added += 1
+            added = self._enqueue_locked(list(self._items) if ids is None else ids)
             self._cond.notify_all()
             return added
 
+    def _enqueue_locked(self, ids: list[str]) -> int:
+        added = 0
+        for item_id in ids:
+            item = self._items.get(item_id)
+            if item is None or item.state in ("queued", "active", "done"):
+                continue
+            item.state, item.error = "queued", ""
+            self._changed_locked(item)
+            self._queue.append(item_id)
+            added += 1
+        return added
+
     def cancel(self) -> None:
         with self._cond:
+            if self._sync.status == "running":
+                # Somebody is at the interface: the run ends, the view stays.
+                self._end_sync_locked("cancelled", "Cancelled in the interface")
             self._cancel_locked()
             self._cond.notify_all()
 
@@ -452,9 +589,7 @@ class MediaManager:
                 items = [row(i) for i in self._items.values()]
             else:
                 changed = [row(i) for i in self._items.values() if i.rev > known_rev]
-            pending = [i for i in self._items.values() if i.state in ("queued", "active")]
-            remaining = sum(max(i.size - i.done, 0) for i in pending)
-            rate = self._rate_locked()
+            pending, remaining, rate = self._progress_locked()
             return {
                 "rev": self._rev,
                 "changed": changed,
@@ -474,6 +609,11 @@ class MediaManager:
                 "rate": rate,
                 "eta": round(remaining / rate) if rate > 0 and remaining else None,
             }
+
+    def _progress_locked(self) -> tuple[list[MediaItem], int, float]:
+        """(files queued or being fetched, bytes still to come, bytes per second)."""
+        pending = [i for i in self._items.values() if i.state in ("queued", "active")]
+        return pending, sum(max(i.size - i.done, 0) for i in pending), self._rate_locked()
 
     def _rate_locked(self) -> float:
         """Bytes per second over the last seconds of the running download."""
@@ -512,6 +652,11 @@ class MediaManager:
                     self._cond.notify_all()
 
     def _next_job_locked(self):
+        if self._closed:
+            return None
+        job = self._sync_job_locked()
+        if job is not None:
+            return job
         if not self.session.media_wanted:
             # The media mode is over, also when the controller ended it by
             # itself (a recording started on the camera): the next view
@@ -519,7 +664,7 @@ class MediaManager:
             if self._listed:
                 self._reset_locked()
             return None
-        if self._closed or not self.session.media_ready:
+        if not self.session.media_ready:
             return None
         if self._relist or not self._listed:
             self._relist = False
@@ -582,6 +727,9 @@ class MediaManager:
                 self._list_rev = self._rev
                 # Kept across a refresh; a thumbnail that failed is asked again.
                 self._thumbs = {k: v for k, v in self._thumbs.items() if k in items and v}
+                self._sync.list_failures = 0
+            else:
+                self._sync.list_failures += 1
         if error:
             time.sleep(self.RETRY_WAIT)
 
