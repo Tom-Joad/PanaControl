@@ -445,9 +445,9 @@ class MediaManager:
             for item in self._items.values():
                 if item.state != "done":
                     item.state, item.error = "queued", ""
+                    self._changed_locked(item)
                     self._queue.append(item.id)
             self._sync["step"] = "downloading"
-            self._rev += 1
         if self._sync["step"] == "listing" and self._sync_list_failures >= self.SYNC_LIST_TRIES:
             return lambda: self._finish_sync("failed", self._list_error)
         if self._sync["step"] == "downloading" and not self._queue:

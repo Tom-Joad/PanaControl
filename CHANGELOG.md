@@ -5,6 +5,15 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Added
+- **Saving the cards from a script.** `POST /api/media/sync` opens the
+  cards, saves everything that is not in the download folder yet and closes
+  them again; `GET /api/media/sync` tells how far the run is and what each
+  file became, `POST /api/media/sync/cancel` ends it. Examples for `curl`
+  and PowerShell are in the README.
+
 ## [3.4.0] - 2026-11-22
 
 ### Added

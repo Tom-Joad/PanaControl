@@ -165,6 +165,10 @@ PY
 [[ $(post /api/media/open '' 'Sec-Fetch-Site:same-origin') == 409 ]] || fail "the cards opened without a camera"
 [[ $(post /api/media/download '{"ids":[]}' 'Sec-Fetch-Site:same-origin') == 400 ]] \
     || fail "an empty download request is not a 400"
+# The run for scripts: readable at any time, refused without a folder.
+[[ $(request /api/media/sync) == 200 ]] || fail "/api/media/sync does not answer 200"
+[[ $(post /api/media/sync '' 'Sec-Fetch-Site:cross-site') == 403 ]] || fail "cross-site run not refused"
+[[ $(post /api/media/sync '') == 409 ]] || fail "a run started without a mapped folder"
 
 echo "== ordered shutdown"
 # SIGTERM must reach the Python process: only then its lifespan handler runs
