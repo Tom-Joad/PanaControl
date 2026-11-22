@@ -60,8 +60,8 @@ def test_iso_values_come_from_the_menu_without_duplicates():
         <item cmd_mode="setsetting" cmd_type="iso" cmd_value="200"/>
         <item cmd_mode="setsetting" cmd_type="iso" cmd_value="200"/>
         <item cmd_mode="setsetting" cmd_type="shtrspeed" cmd_value="1/50"/></menuset>"""
-    assert appmod.iso_values_from_menu(menu) == ["auto", "200"]
-    assert appmod.iso_values_from_menu("not xml") == []
+    assert appmod.values_from_menu(menu, "iso") == ["auto", "200"]
+    assert appmod.values_from_menu("not xml", "iso") == []
 
 
 def _camera_with_reply(monkeypatch, body: str | None, status: int = 200):
@@ -1096,7 +1096,7 @@ def iso_controller(monkeypatch):
     monkeypatch.setattr(appmod.time, "sleep", lambda _: None)
     controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
     controller.camera = ScriptCamera()
-    controller._iso_values = ["auto", "200", "800"]
+    controller._setting_values["iso"] = ["auto", "200", "800"]
     return controller
 
 
@@ -1104,24 +1104,25 @@ def test_set_iso_returns_what_the_camera_took(iso_controller):
     # Measured: 400 was acknowledged and came back as 800.
     camera = iso_controller.camera
     camera.set_setting = lambda name, value: camera.settings.update({name: "800"})
-    assert iso_controller.set_iso("200") == "800"
+    assert iso_controller.set_setting("iso", "200") == "800"
     assert iso_controller.snapshot()["iso"] == "800"
 
 
 def test_set_iso_refuses_a_value_the_camera_does_not_offer(iso_controller):
     with pytest.raises(LumixError):
-        iso_controller.set_iso("12345")
+        iso_controller.set_setting("iso", "12345")
     assert iso_controller.camera.settings["iso"] == "200"
 
 
 def test_set_iso_without_a_known_list_passes_the_value_on(iso_controller):
-    iso_controller._iso_values = []
-    assert iso_controller.set_iso("3200") == "3200"
+    iso_controller._setting_values["iso"] = []
+    assert iso_controller.set_setting("iso", "3200") == "3200"
 
 
 def test_the_iso_route_answers_with_the_adopted_value():
     class IsoController:
-        def set_iso(self, value):
+        def set_setting(self, name, value):
+            assert name == "iso"
             if value == "bad":
                 raise LumixError("not available")
             return "800"
@@ -1751,3 +1752,82 @@ def test_the_slots_with_a_card_are_named_active_one_first(viewer):
     assert controller.card_slots() == ["sd1"]
     controller._state = CameraState(raw={})
     assert controller.card_slots() == []
+
+
+def test_the_size_in_the_reply_outranks_the_one_in_the_listing(card, tmp_path):
+    # Placeholder sizes were seen in the listing (for the preview pictures).
+    class Lying(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                return httpx.Response(200, text=_listing(size=5000))
+            return super().__call__(request)
+
+    manager = card(Lying())
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+    assert _item(manager)["size"] == len(CLIP)
+
+
+def test_a_slot_that_cannot_be_selected_yet_is_an_interruption_not_the_end(card, tmp_path, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "SLOT_SETTLE", 0.0)
+
+    class Reconnecting(FakeSession):
+        slots = ["sd1"]
+        refusals = 0
+
+        def select_slot(self, slot):
+            super().select_slot(slot)
+            # Listing selects once; the download's first attempt is refused.
+            if len(self.selected) == 2:
+                self.refusals += 1
+                raise LumixError("no session context")
+
+    session = Reconnecting()
+    manager = card(FakeCard(cut_after=3000), session)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: manager.snapshot()["items"][0]["state"] == "done")
+    assert session.refusals == 1
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_listing_that_ends_after_the_view_was_closed_is_dropped(card, monkeypatch):
+    session = FakeSession()
+    release = threading.Event()
+
+    class Slow(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                release.wait(5)
+            return super().__call__(request)
+
+    manager = card(Slow(), session)
+    _wait(lambda: manager.snapshot()["listing"])
+    manager.closed(wait=0.1)
+    release.set()
+    _wait(lambda: not manager.snapshot()["listing"])
+    assert manager.snapshot()["listed"] is False and manager.snapshot()["items"] == []
+    # Once the controller has left the media mode and the view is opened
+    # again, the cards are read afresh.
+    session.media_wanted = False
+    time.sleep(1.2)
+    session.media_wanted = True
+    _wait(lambda: manager.snapshot()["listed"])
+
+
+def test_the_touch_is_released_even_when_it_was_refused(monkeypatch):
+    camera = Camera("192.0.2.10")
+    camera.session_id = "0123456789abcdef"
+    sent = []
+
+    def get(url, params=None, headers=None):
+        sent.append(params["value2"])
+        result = "err_reject" if params["value2"] == "on" else "ok"
+        return httpx.Response(200, text=f"<camrply><result>{result}</result></camrply>")
+
+    monkeypatch.setattr(camera._client, "get", get)
+    with pytest.raises(LumixError):
+        camera.touch_focus(500, 500)
+    assert sent == ["on", "off"]

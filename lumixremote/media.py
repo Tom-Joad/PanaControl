@@ -297,6 +297,10 @@ class MediaManager:
         self._relist = False
         self._queue: deque[str] = deque()
         self._cancel = False
+        # Set when the view is closed, until the controller has left the media
+        # mode: whatever the worker is doing ends, and nothing new starts.
+        self._closed = False
+        self._working = False
         self._thumbs: dict[str, bytes] = {}
         # The slot this thread last made active; None when unknown.
         self._slot: str | None = None
@@ -313,7 +317,9 @@ class MediaManager:
             self._stop = True
             self._cancel = True
             self._cond.notify_all()
-        self._thread.join(timeout=5.0)
+        # Short: the controller's stopstream comes after this. A request
+        # that still hangs ends when its connection is closed.
+        self._thread.join(timeout=2.0)
         self._http.close()
 
     def refresh(self) -> None:
@@ -321,16 +327,24 @@ class MediaManager:
             self._relist = True
             self._cond.notify_all()
 
-    def closed(self) -> None:
-        """The media view was closed: stop the download, forget the listing."""
+    def closed(self, wait: float = 3.0) -> None:
+        """The media view is being closed: stop the download, forget the
+        listing, and give the worker a moment to let go of the camera."""
+        deadline = time.monotonic() + wait
         with self._cond:
-            self._cancel_locked()
-            self._listed = False
-            self._list_error = ""
-            self._items = {}
-            self._thumbs = {}
-            self._slot = None
+            self._closed = True
+            self._reset_locked()
             self._cond.notify_all()
+            while self._working and time.monotonic() < deadline:
+                self._cond.wait(0.1)
+
+    def _reset_locked(self) -> None:
+        self._cancel_locked()
+        self._listed = False
+        self._list_error = ""
+        self._items = {}
+        self._thumbs = {}
+        self._slot = None
 
     def enqueue(self, ids: list[str] | None) -> int:
         """Queue the given items, or all that are not done yet. Returns how many."""
@@ -432,15 +446,30 @@ class MediaManager:
                 if job is None:
                     self._cond.wait(1.0)
                     continue
+                self._working = True
             try:
                 job()
+            except Cancelled:
+                pass
             except Exception:
                 # A bug here must not end the thread: the view would hang.
                 log.exception("media_worker_error")
                 time.sleep(self.RETRY_WAIT)
+            finally:
+                with self._cond:
+                    self._working = False
+                    self._cond.notify_all()
 
     def _next_job_locked(self):
-        if not self.session.media_ready:
+        if not self.session.media_wanted:
+            # The media mode is over, also when the controller ended it by
+            # itself (a recording started on the camera): the next view
+            # starts fresh.
+            if self._listed or self._items:
+                self._reset_locked()
+            self._closed = False
+            return None
+        if self._closed or not self.session.media_ready:
             return None
         if self._relist or not self._listed:
             if self._listing:
@@ -489,21 +518,22 @@ class MediaManager:
                     if result.total >= 0:
                         total = result.total
                 log.info("media_listed", extra={"slot": slot or "-", "items": total})
-        except Cancelled:
-            with self._cond:
-                self._listing = False
-            return
+            self._mark_present(items)
         except (LumixError, httpx.HTTPError, ET.ParseError) as exc:
             error = f"The cards could not be listed: {exc}"
             log.warning("media_list_failed", extra={"error": str(exc)})
-        self._mark_present(items)
+        finally:
+            with self._cond:
+                self._listing = False
         with self._cond:
-            self._listing = False
+            if self._closed:
+                return      # closed meanwhile: this listing is nobody's
             self._list_error = error
             if not error:
                 self._items = items
                 self._listed = True
-                self._thumbs = {k: v for k, v in self._thumbs.items() if k in items}
+                # Kept across a refresh; a thumbnail that failed is asked again.
+                self._thumbs = {k: v for k, v in self._thumbs.items() if k in items and v}
         if error:
             time.sleep(self.RETRY_WAIT)
 
@@ -545,7 +575,7 @@ class MediaManager:
         """Make the card slot active that the next requests refer to."""
         if not slot or slot == self._slot:
             return
-        if self._stop or not self.session.media_wanted:
+        if self._stop or self._closed or not self.session.media_wanted:
             raise Cancelled()
         self.session.select_slot(slot)
         time.sleep(self.SLOT_SETTLE)
@@ -562,8 +592,10 @@ class MediaManager:
         except (httpx.HTTPError, LumixError, Cancelled) as exc:
             log.debug("thumbnail_failed", extra={"error": str(exc)})
         with self._cond:
-            # An empty entry keeps a broken thumbnail from being asked again.
-            self._thumbs[item.id] = data
+            if not self._closed and item.id in self._items:
+                # An empty entry keeps a broken thumbnail from being asked
+                # again before the next refresh.
+                self._thumbs[item.id] = data
 
     # -- download --
 
@@ -635,7 +667,12 @@ class MediaManager:
                 raise NoSpace(
                     f"not enough space in the download folder for {file.name}")
             try:
-                self._use_slot(item.slot)
+                try:
+                    self._use_slot(item.slot)
+                except LumixError as exc:
+                    # The session may just be coming back after a dropout;
+                    # that is an interruption, not the end of the download.
+                    raise httpx.TransportError(f"card slot not selected: {exc}") from exc
                 got = self._fetch(item, file, part, offset, base)
             except httpx.HTTPError as exc:
                 got = part.stat().st_size - offset if part.exists() else 0
@@ -664,6 +701,18 @@ class MediaManager:
             headers["Range"] = f"bytes={offset}-"
         received = 0
         with self._http.stream("GET", file.url, headers=headers) as r:
+            if offset and r.status_code == 416:
+                # The part file reaches past the file's real end: the size in
+                # the listing was wrong. Start over; the reply then says it.
+                part.unlink(missing_ok=True)
+                return 0
+            actual = self._size_from(r)
+            if actual and actual != file.size:
+                # The reply knows the size better than the listing, where
+                # placeholders were seen (for the preview pictures).
+                log.info("media_size_corrected", extra={
+                    "file": file.name, "listed": file.size, "actual": actual})
+                file.size = actual
             if offset and r.status_code == 200:
                 offset = 0      # the camera ignored Range: start over
             elif offset and (r.status_code != 206 or not r.headers.get(
@@ -682,6 +731,19 @@ class MediaManager:
                 os.fsync(out.fileno())
         return received
 
+    @staticmethod
+    def _size_from(r: httpx.Response) -> int:
+        """The file's whole size as the reply states it; 0 when it doesn't."""
+        if r.status_code == 206:
+            # Only Content-Range is known to name the whole file here.
+            total = r.headers.get("Content-Range", "").rpartition("/")[2]
+        else:
+            total = r.headers.get("X-FILE_SIZE", "")
+        try:
+            return int(total)
+        except ValueError:
+            return 0
+
     def _progress(self, item: MediaItem, done: int) -> None:
         with self._cond:
             item.done = done
@@ -689,7 +751,7 @@ class MediaManager:
 
     def _check_cancel(self) -> None:
         with self._cond:
-            if self._cancel or self._stop or not self.session.media_wanted:
+            if self._cancel or self._stop or self._closed or not self.session.media_wanted:
                 raise Cancelled()
 
     def _wait_for_camera(self) -> None:

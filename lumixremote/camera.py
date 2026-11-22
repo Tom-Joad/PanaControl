@@ -345,11 +345,18 @@ class Camera:
         """Touch focus at a point; both coordinates run from 0 to 1000.
 
         Sent as a tap, down and up again: a second `on` without the `off` in
-        between was refused with err_reject on the device.
+        between was refused with err_reject on the device. So the `off` goes
+        out whatever became of the `on`, or one lost release would block
+        every later touch.
         """
         self._require_session()
-        self._get_xml(mode="camctrl", type="touch", value=f"{x}/{y}", value2="on")
-        self._get_xml(mode="camctrl", type="touch", value="0/0", value2="off")
+        try:
+            self._get_xml(mode="camctrl", type="touch", value=f"{x}/{y}", value2="on")
+        finally:
+            try:
+                self._get_xml(mode="camctrl", type="touch", value="0/0", value2="off")
+            except LumixError as exc:
+                log.debug("touch_release_failed", extra={"error": str(exc)})
 
     def focus_step(self, nearer: bool) -> str:
         """Move the focus one step and return the reply, which carries the

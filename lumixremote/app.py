@@ -239,10 +239,6 @@ def values_from_menu(allmenu: str, name: str) -> list[str]:
     return list(seen)
 
 
-def iso_values_from_menu(allmenu: str) -> list[str]:
-    return values_from_menu(allmenu, "iso")
-
-
 # Shutter speeds offered in the interface. The camera publishes no list for
 # them (see docs/protocol.md), so this is the usual series in third stops,
 # as Tv in steps of 1/256. The camera snaps to what it allows; the value is
@@ -364,8 +360,8 @@ class Controller:
         "err_CrFold": "No folder could be created on the card",
     }
 
-    # Settings of the bar besides ISO, each set and read back on the device.
-    BAR_SETTINGS = ("whitebalance", "exposure", "shtrspeed")
+    # Settings of the bar, each set and read back on the device.
+    BAR_SETTINGS = ("iso", "whitebalance", "exposure", "shtrspeed")
 
     # The media view needs playback. Gap between two playmode attempts.
     PLAYMODE_RETRY = 8.0
@@ -417,10 +413,7 @@ class Controller:
         self._rec_dropped = False
         self._connected_at = 0.0
         self._resumes = 0
-        self._iso = ""
-        self._focusmode = ""
-        self._iso_values: list[str] = []
-        # The other settings of the bar: current value and what may be chosen.
+        # The settings of the bar: current value and what may be chosen.
         self._settings: dict[str, str] = {}
         self._setting_values: dict[str, list[str]] = {"shtrspeed": shutter_values()}
         # Lens position, known only after a focus step: the camera has no
@@ -481,7 +474,6 @@ class Controller:
         answers every later command with err_busy until it is power cycled.
         """
         self._stop.set()
-        self.events.stop()
         if self._thread:
             self._thread.join(timeout=3.0)
         # A session marked as lost is released too. Seen on the device: after
@@ -496,6 +488,8 @@ class Controller:
         finally:
             self.stream.stop()
             self.camera.close()
+            # Last: nothing may stand between the shutdown and stopstream.
+            self.events.stop()
 
     # ------------------------------------------------------------------ #
 
@@ -679,19 +673,16 @@ class Controller:
                 self._lens_anchor = lens_anchor(self.camera.get_info("lens")) or b""
             except LumixError as exc:
                 log.info("lens_unreadable", extra={"error": str(exc)})
-        if not self._iso_values:
+        if not self._setting_values.get("iso"):
             # allmenu is about 380 KB and doesn't change, so a reconnect
             # doesn't pull it over the WLAN again every time.
             try:
                 menu = self.camera.get_info("allmenu")
-                values = iso_values_from_menu(menu)
-                if values:
-                    self._iso_values = values
-                    log.info("iso_values", extra={"count": len(values)})
-                for name in ("whitebalance", "exposure"):
+                for name in ("iso", "whitebalance", "exposure"):
                     found = values_from_menu(menu, name)
                     if found:
                         self._setting_values[name] = found
+                log.info("iso_values", extra={"count": len(self._setting_values.get("iso", []))})
             except LumixError as exc:
                 log.info("menu_unreadable", extra={"error": str(exc)})
 
@@ -783,12 +774,7 @@ class Controller:
         if mode == "rec":
             self._recmode_tried = False
             self._recmode_error = ""
-            for name in ("iso", "focusmode"):
-                try:
-                    self._set(**{name: self.camera.get_setting(name)})
-                except LumixError as exc:
-                    log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
-            for name in self.BAR_SETTINGS:
+            for name in (*self.BAR_SETTINGS, "focusmode"):
                 try:
                     value = self.camera.get_setting(name)
                 except LumixError as exc:
@@ -1047,8 +1033,7 @@ class Controller:
 
     def _set(self, *, state: CameraState | None = None,
              status: str | None = None, error: str | None = None,
-             cammode: str | None = None, iso: str | None = None,
-             focusmode: str | None = None) -> None:
+             cammode: str | None = None) -> None:
         with self._lock:
             if state is not None:
                 self._state = state
@@ -1058,36 +1043,17 @@ class Controller:
                 self._error = error
             if cammode is not None:
                 self._cammode = cammode
-            if iso is not None:
-                self._iso = iso
-            if focusmode is not None:
-                self._focusmode = focusmode
 
     # ------------------------------------------------------------------ #
-
-    def set_iso(self, value: str) -> str:
-        """Set the sensitivity and report back what the camera actually took.
-
-        An acknowledged ok doesn't mean the value applies: measured was ISO
-        400, which the camera adopted as 800. So the value is read back and
-        the read value is returned.
-        """
-        if self._iso_values and value not in self._iso_values:
-            raise LumixError(f"ISO {value!r} is not available on this camera")
-        self.camera.set_setting("iso", value)
-        time.sleep(0.4)
-        actual = self.camera.get_setting("iso")
-        self._set(iso=actual)
-        return actual
 
     def set_setting(self, name: str, value: str) -> str:
         """Set one of the bar's settings; returns what the camera adopted.
 
-        As with ISO the camera snaps to what it allows (measured: exposure
-        compensation -5 became -3), so the value is read back.
+        An acknowledged ok doesn't mean the value applies: the camera snaps to
+        what it allows in the current mode (measured: ISO 400 became 800,
+        exposure compensation -5 became -3). So the value is read back and
+        the read value is returned.
         """
-        if name == "iso":
-            return self.set_iso(value)
         if name not in self.BAR_SETTINGS:
             raise LumixError(f"{name!r} can't be set here")
         allowed = self._setting_values.get(name)
@@ -1165,8 +1131,8 @@ class Controller:
         """Current view of the world, safe to serialise at any time."""
         with self._lock:
             state, status, error = self._state, self._status, self._error
-            cammode, iso, iso_values = self._cammode, self._iso, self._iso_values
-            focusmode = self._focusmode
+            cammode = self._cammode
+            focusmode = self._settings.get("focusmode", "")
             anchor = self._lens_anchor
             focus = self._focus
         settings = self.snapshot_settings()
@@ -1176,8 +1142,9 @@ class Controller:
             "status": status,
             "error": error,
             "cammode": cammode,
-            "iso": iso,
-            "iso_values": iso_values,
+            # ISO is in "settings" too; these two stay for scripts that read them.
+            "iso": settings["iso"]["value"],
+            "iso_values": settings["iso"]["values"],
             "focusmode": focusmode,
             "settings": settings,
             # Known only after a focus step from here.
@@ -1231,7 +1198,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         # Runs on Ctrl+C and on SIGTERM from the container too.
         log.info("shutting_down")
-        # First the download, so the camera is idle when the session goes.
+        # The download is told to stop first, so the camera is idle when the
+        # session goes; it gets little time, stopstream must not wait for it.
         await run_in_threadpool(media.stop)
         await run_in_threadpool(controller.stop)
 
@@ -1415,7 +1383,7 @@ async def set_iso(request: Request) -> dict:
     if not value:
         raise HTTPException(status_code=400, detail="No ISO value given")
     try:
-        actual = await run_in_threadpool(controller.set_iso, value)
+        actual = await run_in_threadpool(controller.set_setting, "iso", value)
     except LumixError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True, "iso": actual}
@@ -1501,8 +1469,10 @@ async def media_close(request: Request) -> dict:
     controller, media = _controller(request), _media(request)
 
     def close() -> None:
-        controller.media_close()
+        # The worker first: the slot is put back only once nothing is being
+        # fetched from the other card any more.
         media.closed()
+        controller.media_close()
 
     return await _command(close)
 

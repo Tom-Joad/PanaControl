@@ -533,7 +533,7 @@
 
   <label class="field">
     <span>ISO</span>
-    <select id="iso" disabled><option>--</option></select>
+    <select id="iso" data-setting="iso" disabled><option>--</option></select>
   </label>
   <label class="field">
     <span>Shutter</span>
@@ -681,7 +681,6 @@ function render(s, transportError) {
     el("batt").textContent = "--";
     el("rest").textContent = "--";
     el("fps").textContent  = "--";
-    el("iso").disabled = true;
     el("aperture").textContent = "--";
     el("temp").textContent = "--";
     el("card").textContent = "--";
@@ -707,7 +706,7 @@ function render(s, transportError) {
     s.status === "online" && s.model ? "Connected · " + s.model
                                      : LINK_TEXT[s.status] || s.status;
 
-  renderExposure(s);
+  el("aperture").textContent = s.aperture || "--";
   el("batt").textContent = fmtBatt(s.battery);
   el("rest").textContent = fmtRemaining(s.video_remaining);
   el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
@@ -777,38 +776,12 @@ function render(s, transportError) {
   }
 }
 
-/* ---- Exposure ------------------------------------------------------ */
-// The list of values comes from the camera, not from this file. It is only
-// rebuilt when it changed; otherwise the select would close on every poll.
 
-let isoBusy = false;
-let isoBuilt = "";
-
-function renderExposure(s) {
-  const sel = el("iso");
-  const values = s.iso_values || [];
-  const key = values.join(",");
-
-  if (key && key !== isoBuilt) {
-    isoBuilt = key;
-    sel.innerHTML = "";
-    for (const v of values) {
-      const node = document.createElement("option");
-      node.value = v;
-      node.textContent = v === "auto" ? "AUTO" : v;
-      sel.appendChild(node);
-    }
-  }
-  // Don't interfere while a change is in progress
-  if (!isoBusy && s.iso && sel.value !== s.iso) sel.value = s.iso;
-  sel.disabled = isoBusy || s.status !== "online" || !key;
-
-  el("aperture").textContent = s.aperture || "--";
-}
-
-/* ---- Shutter, exposure compensation, white balance ------------------- */
-// Like ISO: the lists come from the status, a set value is read back, and
-// what the camera chose instead is said.
+/* ---- ISO, shutter, exposure compensation, white balance -------------- */
+// The lists come from the camera (the shutter series from the app), not
+// from this file. A select is only rebuilt when its list changed; otherwise
+// it would close on every poll. A set value is read back, and what the
+// camera chose instead is said.
 
 const TIMES = [8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500,
                400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10,
@@ -824,6 +797,9 @@ function tv(value) {
 }
 
 const SETTING_LABEL = {
+  iso(value) {
+    return value === "auto" ? "AUTO" : value;
+  },
   shtrspeed(value) {
     // Tv counts thirds from 1/8000 (13) down; name it by the usual series.
     const index = Math.round((13 - tv(value)) * 3);
@@ -923,6 +899,7 @@ function renderFocus(s) {
 }
 
 async function focusStep(direction) {
+  if (el("focus-far").disabled) { stopFocus(); return; }
   if (focusInFlight) return;
   focusInFlight = true;
   try {
@@ -950,6 +927,10 @@ function stopFocus() {
   clearInterval(focusTimer);
   focusTimer = null;
 }
+// A release that never reaches the button (the window loses focus, the
+// button is disabled under the finger) must not leave the lens moving.
+for (const name of ["pointerup", "pointercancel", "blur"]) window.addEventListener(name, stopFocus);
+document.addEventListener("visibilitychange", stopFocus);
 
 for (const [id, direction] of [["focus-far", "far"], ["focus-near", "near"]]) {
   const button = el(id);
@@ -1029,31 +1010,6 @@ async function touchFocus(ev) {
     flash("Command not delivered: " + (err && err.message || err));
   }
 }
-
-el("iso").addEventListener("change", async (ev) => {
-  const sel = ev.currentTarget;
-  const value = sel.value;
-  isoBusy = true;
-  sel.disabled = true;
-  try {
-    const r = await fetch("/api/iso", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value })
-    });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      flash(body.detail || ("HTTP " + r.status));
-    } else if (body.iso && body.iso !== value) {
-      // The camera snaps to the value allowed in the current mode.
-      flash("The camera chose ISO " + body.iso + " instead of " + value, "Adjusted");
-    }
-  } catch (err) {
-    flash("ISO not set: " + (err && err.message || err));
-  }
-  isoBusy = false;
-  poll();
-});
 
 function setButtons(canStart, canStop) {
   // Autofocus works in manual focus too; confirmed on the device.

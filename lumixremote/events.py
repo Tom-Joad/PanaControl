@@ -124,7 +124,9 @@ class EventSubscriber:
             self._thread.join(timeout=3.0)
         if self._sid:
             try:
-                self._http.request("UNSUBSCRIBE", self._url, headers={"SID": self._sid})
+                # Short: this runs during shutdown.
+                self._http.request("UNSUBSCRIBE", self._url, headers={"SID": self._sid},
+                                   timeout=2.0)
             except httpx.HTTPError:
                 pass    # it expires by itself
         if self._server:
@@ -181,9 +183,10 @@ class EventSubscriber:
         while not self._stop.wait(wait):
             try:
                 ok = self._renew() if self._sid else self._subscribe()
-            except httpx.HTTPError as exc:
-                # The camera is off or out of reach; an old subscription may
-                # still be good when it comes back.
+            except (httpx.HTTPError, OSError) as exc:
+                # The camera is off or out of reach (OSError: no route to it
+                # yet); an old subscription may still be good when it comes
+                # back.
                 log.debug("events_unreachable", extra={"error": str(exc)})
                 ok = False
             wait = self.RENEW_EVERY if ok else self.RETRY_EVERY
