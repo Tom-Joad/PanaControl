@@ -1,6 +1,7 @@
 config.toml
 .env
 out/
+downloads/
 __pycache__/
 *.pyc
 .venv/

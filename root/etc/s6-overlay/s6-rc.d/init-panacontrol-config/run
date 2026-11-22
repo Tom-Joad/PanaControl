@@ -22,4 +22,18 @@ if [[ -z ${LSIO_NON_ROOT_USER} ]]; then
         echo "ERROR: refusing to run as root: set PUID and PGID to a non-zero ID" >&2
         exit 1
     fi
+
+    # A download folder that Docker created belongs to root, with mode 755;
+    # hand it over and give it the mode UMASK asks for. Otherwise the files in
+    # it could be read by the group but not deleted: that needs write access
+    # to the folder. A folder that already belongs to someone is left as it is.
+    DOWNLOADS=${LUMIX_DOWNLOAD_DIR:-/downloads}
+    if [[ -d ${DOWNLOADS} ]] && [[ $(stat -c %u "${DOWNLOADS}") == 0 ]]; then
+        lsiown abc:abc "${DOWNLOADS}"
+        # UMASK from the environment: the base image applies it to services
+        # only, not to this step.
+        MASK=${UMASK:-022}
+        [[ ${MASK} =~ ^[0-7]{1,4}$ ]] || MASK=022
+        chmod "$(printf '%o' $(( 0777 & ~0${MASK} )))" "${DOWNLOADS}"
+    fi
 fi

@@ -35,20 +35,18 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
-from dataclasses import dataclass, field
-from urllib.parse import urljoin
 
 import httpx
 
 from .camera import DESCRIPTOR_PATH, DESCRIPTOR_PORT, Camera, LumixError
+from .events import event_url, local_ip_towards  # noqa: F401
+from .media import (CDS_PATH, DLNA_AGENT, DOWNLOAD_AGENT, SOAP_ACTION,  # noqa: F401
+                    BrowseResult, Entry, Resource, _local, browse_envelope,
+                    parse_browse, parse_protocol_info)
 from .stream import SOI
 
 log = logging.getLogger("mediaprobe")
 
-CDS_PATH = "/Server0/CDS_control"
-SOAP_ACTION = "urn:schemas-upnp-org:service:ContentDirectory:1#Browse"
-DLNA_AGENT = "Panasonic MIL DLNA CP UPnP/1.0"
-DOWNLOAD_AGENT = "LUMIX Sync"
 
 # The fixed part of a live view datagram, as the phone app reads it.
 DATAGRAM_FIXED = 32
@@ -56,109 +54,6 @@ INFO_LENGTH_AT = 30
 
 
 # ------------------------------------------------------------- parsing ---
-
-def browse_envelope(object_id: str, start: int, count: int) -> str:
-    """The Browse request exactly as the phone app sends it."""
-    return (
-        '<?xml version="1.0" encoding="utf-8"?>'
-        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
-        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
-        '<u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1" '
-        'xmlns:pana="urn:schemas-panasonic-com:pana">'
-        f"<ObjectID>{object_id}</ObjectID>"
-        "<BrowseFlag>BrowseDirectChildren</BrowseFlag><Filter>*</Filter>"
-        f"<StartingIndex>{start}</StartingIndex>"
-        f"<RequestedCount>{count}</RequestedCount>"
-        "<SortCriteria></SortCriteria>"
-        "<pana:X_FromCP>LumixLink2.0</pana:X_FromCP>"
-        "</u:Browse></s:Body></s:Envelope>"
-    )
-
-
-def _local(tag: str) -> str:
-    """Tag name without its namespace."""
-    return tag.rsplit("}", 1)[-1]
-
-
-@dataclass
-class Resource:
-    """One <res> of a listed item: an address and what it leads to."""
-
-    url: str
-    mime: str = ""
-    kind: str = ""           # PANASONIC.COM_PN, e.g. CAM_ORG
-    filename: str = ""       # OriginalFileName
-    size: str = ""
-
-
-@dataclass
-class Entry:
-    """One listed <item> or <container>."""
-
-    id: str
-    is_container: bool
-    title: str = ""
-    date: str = ""
-    upnp_class: str = ""
-    resources: list[Resource] = field(default_factory=list)
-
-
-@dataclass
-class BrowseResult:
-    entries: list[Entry]
-    returned: int
-    total: int
-
-
-def parse_protocol_info(value: str) -> tuple[str, str, str]:
-    """Split a protocolInfo into (MIME type, kind, original file name).
-
-    The form is `http-get:*:<mime>:<key>=<value>;<key>=<value>`, with the keys
-    PANASONIC.COM_PN and OriginalFileName among them.
-    """
-    parts = value.split(":", 3)
-    mime = parts[2] if len(parts) > 2 else ""
-    extras = parts[3] if len(parts) > 3 else ""
-    fields = dict(p.split("=", 1) for p in extras.split(";") if "=" in p)
-    name = fields.get("OriginalFileName", "").strip("'\"")
-    return mime, fields.get("PANASONIC.COM_PN", ""), name
-
-
-def parse_browse(text: str) -> BrowseResult:
-    """Read a Browse reply: the envelope and the DIDL-Lite document in it."""
-    root = ET.fromstring(text)
-    values = {_local(el.tag): (el.text or "") for el in root.iter()}
-    didl = values.get("Result", "").strip()
-    entries: list[Entry] = []
-    if didl:
-        for node in ET.fromstring(didl):
-            kind = _local(node.tag)
-            if kind not in ("item", "container"):
-                continue
-            entry = Entry(id=node.get("id", ""), is_container=kind == "container")
-            for child in node:
-                name = _local(child.tag)
-                if name == "title":
-                    entry.title = child.text or ""
-                elif name == "date":
-                    entry.date = child.text or ""
-                elif name == "class":
-                    entry.upnp_class = child.text or ""
-                elif name == "res":
-                    mime, pn, filename = parse_protocol_info(child.get("protocolInfo", ""))
-                    entry.resources.append(Resource(
-                        url=(child.text or "").strip(), mime=mime, kind=pn,
-                        filename=filename, size=child.get("size", "")))
-            entries.append(entry)
-
-    def number(name: str) -> int:
-        try:
-            return int(values.get(name, ""))
-        except ValueError:
-            return -1
-
-    return BrowseResult(entries, number("NumberReturned"), number("TotalMatches"))
-
 
 def parse_folders(capability_xml: str) -> list[dict[str, str]]:
     """The listable folders from `getinfo&type=capability`.
@@ -181,21 +76,6 @@ def parse_folders(capability_xml: str) -> list[dict[str, str]]:
                     "object_id": object_id,
                 })
     return folders
-
-
-def event_url(descriptor_xml: str, base: str) -> str | None:
-    """The eventSubURL of the ConnectionManager service, made absolute."""
-    try:
-        root = ET.fromstring(descriptor_xml)
-    except ET.ParseError:
-        return None
-    for service in root.iter():
-        if _local(service.tag) != "service":
-            continue
-        values = {_local(c.tag): (c.text or "").strip() for c in service}
-        if "ConnectionManager" in values.get("serviceType", "") and values.get("eventSubURL"):
-            return urljoin(base, values["eventSubURL"])
-    return None
 
 
 def datagram_layout(datagram: bytes) -> dict[str, int | bool]:
@@ -254,12 +134,6 @@ class EventListener:
         self._server.shutdown()
         self._server.server_close()
 
-
-def local_ip_towards(ip: str) -> str:
-    """The address of this machine as the camera sees it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-        probe.connect((ip, 9))
-        return probe.getsockname()[0]
 
 
 # ----------------------------------------------------------------- run ---

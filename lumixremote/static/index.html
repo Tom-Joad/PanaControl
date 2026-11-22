@@ -82,6 +82,7 @@
   .mark.connect { background: var(--status-neutral); }
   .mark.standby { background: var(--status-warning); }
   .mark.offline { background: var(--status-negative); }
+  .mark.media   { background: var(--status-neutral); }
 
   /* ---- Exposure and readings: label over value ---------------------- */
 
@@ -134,15 +135,49 @@
 
   .readings {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-12);
   }
+  .reading .value { white-space: nowrap; }
 
-  /* Readings and controls move to the right only where the whole bar fits
-     on one line (up to about 1360px with the longest state text). Narrower,
-     the bar wraps and every row starts at the left edge. */
-  @media (min-width: 1400px) {
-    .readings { margin-left: auto; }
+  /* ---- Focus: steps and touch --------------------------------------- */
+  /* Its own group: these move the lens, the buttons next to it don't. */
+
+  .focus {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-12);
   }
+  .focus .btn {
+    min-height: 48px;
+    padding: 0 var(--space-18);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+  /* Touch focus is a switch. Off, a tap on the picture does nothing; on,
+     the button is filled and the picture shows a crosshair cursor. */
+  #touch[aria-pressed="true"],
+  #more[aria-expanded="true"] {
+    background: var(--text-on-ink);
+    color: var(--surface-ink);
+    border-color: var(--text-on-ink);
+  }
+  body.touch-on main { cursor: crosshair; }
+
+  #touch-mark {
+    position: absolute;
+    display: none;
+    width: 56px;
+    height: 56px;
+    margin: -28px 0 0 -28px;
+    border: var(--stroke-accent) solid var(--text-on-ink);
+    pointer-events: none;
+  }
+  #touch-mark.show { display: block; }
+
+  /* The bar shows what every take needs: ISO, shutter, battery, remaining
+     time and the controls. The rest waits behind More (owner, 2026-11-22). */
+  body:not(.more) .extra { display: none; }
 
   /* ---- Controls ------------------------------------------------------ */
 
@@ -169,11 +204,13 @@
   main {
     position: relative;
     flex: 1;
-    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
+    /* Never squeezed away by a tall bar (a phone held upright, More open):
+       the page scrolls instead. */
+    min-height: 240px;
     background: var(--pitch);
     border: var(--stroke-hairline) solid var(--border-on-ink);
     /* A double-tap switches full screen instead of zooming. */
@@ -203,6 +240,39 @@
     letter-spacing: 0.2em;
   }
   main.recording #rec { display: block; }
+  #rec-time {
+    margin-left: var(--space-10);
+    letter-spacing: 0.06em;
+    font-variant-numeric: tabular-nums;
+  }
+  #rec-time:empty { display: none; }
+
+  /* A recording ended without a Stop from here: stays until acknowledged
+     or until the next recording starts. */
+  #notice {
+    position: absolute;
+    top: var(--space-14);
+    left: 50%;
+    z-index: 2;
+    transform: translateX(-50%);
+    display: none;
+    align-items: center;
+    gap: var(--space-14);
+    max-width: calc(100% - 2 * var(--space-14));
+    padding: var(--space-10) var(--space-14);
+    background: var(--surface-ink-raised);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+    border-top: var(--stroke-accent) solid var(--status-warning);
+    color: var(--text-on-ink);
+    font: var(--text-meta);
+  }
+  #notice.show { display: flex; }
+  #notice .tracked { color: var(--text-on-ink-faint); white-space: nowrap; }
+  #notice .btn {
+    min-height: 44px;
+    padding: 0 var(--space-14);
+    touch-action: manipulation;
+  }
 
   /* Plain words instead of a frozen picture. */
   #overlay {
@@ -232,6 +302,146 @@
     color: var(--text-on-ink-faint);
     font: var(--text-meta);
     word-break: break-word;
+  }
+
+  /* ---- Cards: what is on them, and the downloads --------------------- */
+  /* Takes the stage while it is open: in playback the camera has no live
+     view to send. */
+
+  #media {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    background: var(--surface-ink);
+    text-align: left;
+  }
+  body.media #media { display: flex; }
+  /* With the cards open nothing in the bar can be used: only the name and
+     the state stay, and the view gets the screen. */
+  body.media header > :not(.wordmark):not(.link) { display: none; }
+  body.media #view,
+  body.media #overlay,
+  body.media #touch-mark,
+  body.media #full { display: none; }
+
+  .media-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-12);
+    padding: var(--space-12) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  .media-bar .summary {
+    margin-right: auto;
+    color: var(--text-on-ink-muted);
+    font: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+  }
+  .media-bar .btn {
+    min-height: 44px;
+    padding: 0 var(--space-18);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+
+  #media-note {
+    display: none;
+    padding: var(--space-12) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+    border-left: var(--stroke-accent) solid var(--status-warning);
+    color: var(--text-on-ink);
+    font: var(--text-meta);
+  }
+  #media-note.show { display: block; }
+
+  #media-total {
+    display: none;
+    align-items: center;
+    gap: var(--space-14);
+    padding: var(--space-10) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+    color: var(--text-on-ink-muted);
+    font: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+  }
+  #media-total.show { display: flex; }
+
+  #media-list {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+  #media-list li {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-14);
+    padding: var(--space-10) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  #media-list .thumb {
+    width: 96px;
+    height: 72px;
+    object-fit: cover;
+    background: var(--pitch);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  #media-list .name {
+    font: var(--text-body-on-ink);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    overflow-wrap: anywhere;
+  }
+  #media-list .meta {
+    margin-top: var(--space-4);
+    color: var(--text-on-ink-faint);
+    font: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+  }
+  #media-list .meta.failed { color: var(--text-on-ink); }
+  #media-list .btn {
+    min-width: 8.5em;
+    min-height: 44px;
+    padding: 0 var(--space-14);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+  #media-empty {
+    display: none;
+    padding: var(--space-24);
+    color: var(--text-on-ink-muted);
+    text-align: center;
+  }
+
+  /* Progress: a hairline track, filled in the positive status colour and
+     always next to its number. */
+  .bar {
+    height: 4px;
+    margin-top: var(--space-6);
+    background: var(--border-on-ink);
+  }
+  .bar > i {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: var(--status-positive);
+  }
+  #media-total .bar { flex: 1; margin-top: 0; }
+
+  @media (max-width: 760px) {
+    #media-list li { grid-template-columns: 64px minmax(0, 1fr); }
+    #media-list .thumb { width: 64px; height: 48px; }
+    #media-list .btn { grid-column: 1 / -1; }
+    .media-bar .summary { width: 100%; }
+    .media-bar .btn { flex: 1; padding: 0 var(--space-6); }
+    /* The way back comes first and takes the whole row. */
+    .media-bar #media-close { order: -1; flex-basis: 100%; }
+    .media-bar .tracked { display: none; }
   }
 
   /* ---- Full screen: only the live view ------------------------------ */
@@ -313,8 +523,15 @@
 
   /* Narrow window: the controls take their own row and share it. */
   @media (max-width: 760px) {
-    .actions { width: 100%; }
-    .actions .btn { flex: 1; padding: 0 var(--space-6); }
+    .actions, .focus { width: 100%; }
+    .actions { flex-wrap: wrap; }
+    .actions .btn, .focus .btn { flex: 1; padding: 0 var(--space-6); }
+    /* Three to a row, so five buttons keep a size a thumb can hit. */
+    .actions .btn { flex: 1 1 28%; }
+    /* The switch gets its own row: it is the one that must not be hit by
+       accident next to the step buttons. */
+    .focus #touch { flex-basis: 100%; }
+    .focus { order: 1; }
   }
 </style>
 </head>
@@ -327,9 +544,21 @@
 
   <label class="field">
     <span>ISO</span>
-    <select id="iso" disabled><option>--</option></select>
+    <select data-setting="iso" disabled><option>--</option></select>
   </label>
-  <label class="field readonly">
+  <label class="field">
+    <span>Shutter</span>
+    <select data-setting="shtrspeed_angle" disabled><option>--</option></select>
+  </label>
+  <label class="field extra">
+    <span>EV</span>
+    <select data-setting="exposure" disabled><option>--</option></select>
+  </label>
+  <label class="field extra">
+    <span>White balance</span>
+    <select data-setting="whitebalance" disabled><option>--</option></select>
+  </label>
+  <label class="field readonly extra">
     <span>Aperture</span>
     <!-- The camera offers no call to set it, see docs/protocol.md. -->
     <output class="value" id="aperture" title="Read only: the camera accepts no aperture value">--</output>
@@ -338,23 +567,54 @@
   <div class="readings">
     <div class="reading"><span>Battery</span><b class="value" id="batt">--</b></div>
     <div class="reading"><span>Remaining</span><b class="value" id="rest">--</b></div>
-    <div class="reading"><span>fps</span><b class="value" id="fps">--</b></div>
+    <div class="reading extra"><span>fps</span><b class="value" id="fps">--</b></div>
+    <div class="reading extra"><span>Temp</span><b class="value" id="temp">--</b></div>
+    <div class="reading extra"><span>Card</span><b class="value" id="card">--</b></div>
+  </div>
+
+  <div class="focus extra">
+    <button class="btn btn--on-ink" id="focus-far" type="button" title="Move the focus a step farther; hold to keep moving">Far</button>
+    <div class="reading"><span>Focus</span><b class="value" id="focus-pos">--</b></div>
+    <button class="btn btn--on-ink" id="focus-near" type="button" title="Move the focus a step nearer; hold to keep moving">Near</button>
+    <button class="btn btn--on-ink" id="touch" type="button" aria-pressed="false" title="While on, a tap on the picture sets the focus point">Touch focus off</button>
   </div>
 
   <div class="actions">
     <button class="btn btn--on-ink" id="af">Autofocus</button>
     <button class="btn btn--primary" id="start">Record</button>
     <button class="btn btn--on-ink" id="stop">Stop</button>
+    <button class="btn btn--on-ink" id="cards" title="Show and download what is on the cards">Cards</button>
+    <button class="btn btn--on-ink" id="more" type="button" aria-expanded="false" title="Show exposure compensation, white balance, aperture, focus and more readings">More</button>
   </div>
 </header>
 
 <main id="stage">
   <img id="view" alt="Live view">
-  <div id="rec">REC</div>
+  <div id="rec">REC<span id="rec-time"></span></div>
+  <div id="touch-mark"></div>
   <div id="overlay">
     <div class="title" id="ov-title">No live view</div>
     <div class="hint"  id="ov-hint"></div>
     <div class="detail" id="ov-detail"></div>
+  </div>
+  <section id="media" aria-label="Cards">
+    <div class="media-bar">
+      <span class="tracked">Cards</span>
+      <span class="summary" id="media-summary"></span>
+      <button class="btn btn--primary" id="media-all" type="button">Download all</button>
+      <button class="btn btn--on-ink" id="media-cancel" type="button">Cancel</button>
+      <button class="btn btn--on-ink" id="media-refresh" type="button">Refresh</button>
+      <button class="btn btn--on-ink" id="media-close" type="button">Back to live view</button>
+    </div>
+    <div id="media-note" role="status"></div>
+    <div id="media-total"><span id="media-total-text"></span><div class="bar"><i id="media-total-bar"></i></div></div>
+    <div id="media-empty">The cards hold no files.</div>
+    <ul id="media-list"></ul>
+  </section>
+  <div id="notice" role="status">
+    <span class="tracked">Recording ended</span>
+    <span id="notice-text"></span>
+    <button class="btn btn--on-ink" id="notice-close" type="button">OK</button>
   </div>
   <button id="full" type="button" title="Full screen (V, or double-click the picture)" aria-label="Full screen">
     <svg class="enter" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -405,6 +665,7 @@ view.addEventListener("error", () => {
 
 const LINK_TEXT = {
   online:     "Connected",
+  media:      "Cards open",
   connecting: "Connecting",
   offline:    "No connection",
   standby:    "Not ready"
@@ -433,9 +694,14 @@ function render(s, transportError) {
     el("batt").textContent = "--";
     el("rest").textContent = "--";
     el("fps").textContent  = "--";
-    el("iso").disabled = true;
     el("aperture").textContent = "--";
+    el("temp").textContent = "--";
+    el("card").textContent = "--";
+    for (const sel of document.querySelectorAll("select[data-setting]")) sel.disabled = true;
+    renderFocus(null);
     stage.classList.remove("recording");
+    el("notice").classList.remove("show");
+    setMedia(false);
     setButtons(false, false);
     overlay(true, "Control unreachable",
             "The local service does not answer. Is the process still running?",
@@ -445,6 +711,7 @@ function render(s, transportError) {
 
   el("mark").className = "mark " + (
     s.status === "online"  ? "online"  :
+    s.status === "media"   ? "media"   :
     s.status === "offline" ? "offline" :
     s.status === "standby" ? "standby" : "connect");
 
@@ -452,15 +719,22 @@ function render(s, transportError) {
     s.status === "online" && s.model ? "Connected · " + s.model
                                      : LINK_TEXT[s.status] || s.status;
 
-  renderExposure(s);
+  el("aperture").textContent = s.aperture || "--";
   el("batt").textContent = fmtBatt(s.battery);
   el("rest").textContent = fmtRemaining(s.video_remaining);
   el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
+  el("temp").textContent = s.temperature ? s.temperature.replace(/_/g, " ") : "--";
+  el("card").textContent = s.card ? s.card.replace(/^sd/, "") : "--";
+  renderSettings(s);
+  renderFocus(s);
 
   stage.classList.toggle("recording", !!s.recording);
+  el("rec-time").textContent = s.recording && s.rec_seconds != null ? fmtClock(s.rec_seconds) : "";
+  renderNotice(s);
+  setMedia(!!s.media);
   // Stop needs a session, not record mode: a recording the camera reports
   // outside 'rec' can still be stopped.
-  const session = s.status === "online" || s.status === "standby";
+  const session = s.status === "online" || s.status === "standby" || s.status === "media";
   setButtons(s.status === "online" && !s.recording, session && s.recording);
 
   if (s.status === "standby" && s.recording) {
@@ -515,65 +789,208 @@ function render(s, transportError) {
   }
 }
 
-/* ---- Exposure ------------------------------------------------------ */
-// The list of values comes from the camera, not from this file. It is only
-// rebuilt when it changed; otherwise the select would close on every poll.
 
-let isoBusy = false;
-let isoBuilt = "";
+/* ---- ISO, shutter, exposure compensation, white balance -------------- */
+// The lists come from the camera, not from this file. A select is only rebuilt when its list changed; otherwise
+// it would close on every poll. A set value is read back, and what the
+// camera chose instead is said.
 
-function renderExposure(s) {
-  const sel = el("iso");
-  const values = s.iso_values || [];
-  const key = values.join(",");
+const WB_NAMES = {
+  auto: "AWB", auto_cool: "AWB cool", auto_warm: "AWB warm", daylight: "Daylight",
+  cloudy: "Cloudy", shade: "Shade", halogen: "Incandescent", flash: "Flash"
+};
 
-  if (key && key !== isoBuilt) {
-    isoBuilt = key;
-    sel.innerHTML = "";
-    for (const v of values) {
-      const node = document.createElement("option");
-      node.value = v;
-      node.textContent = v === "auto" ? "AUTO" : v;
-      sel.appendChild(node);
-    }
+// How a value reads in its select.
+const SETTING_LABEL = {
+  iso(value) {
+    return value === "auto" ? "AUTO" : value;
+  },
+  shtrspeed_angle(value) {
+    return value + "°";
+  },
+  exposure(value) {
+    return (value.startsWith("-") || value === "0" ? "" : "+") + value;
+  },
+  whitebalance(value) {
+    if (WB_NAMES[value]) return WB_NAMES[value];
+    const set = /^white_set(\d)$/.exec(value), temp = /^color_temp(\d)$/.exec(value);
+    return set ? "Set " + set[1] : temp ? "Kelvin " + temp[1] : value;
   }
-  // Don't interfere while a change is in progress
-  if (!isoBusy && s.iso && sel.value !== s.iso) sel.value = s.iso;
-  sel.disabled = isoBusy || s.status !== "online" || !key;
+};
 
-  el("aperture").textContent = s.aperture || "--";
+const settingBusy = {};
+const settingBuilt = {};
+
+function renderSettings(s) {
+  for (const sel of document.querySelectorAll("select[data-setting]")) {
+    const name = sel.dataset.setting;
+    const setting = (s.settings || {})[name] || { value: "", values: [] };
+    const values = setting.values.slice();
+    // A value the camera reports but the list lacks still has to show.
+    if (setting.value && !values.includes(setting.value)) values.push(setting.value);
+    const key = values.join(",");
+    if (key && key !== settingBuilt[name]) {
+      settingBuilt[name] = key;
+      sel.innerHTML = "";
+      for (const v of values) {
+        const node = document.createElement("option");
+        node.value = v;
+        node.textContent = SETTING_LABEL[name](v);
+        sel.appendChild(node);
+      }
+    }
+    if (!settingBusy[name] && setting.value && sel.value !== setting.value) sel.value = setting.value;
+    sel.disabled = !!settingBusy[name] || s.status !== "online" || !setting.value;
+  }
 }
 
-el("iso").addEventListener("change", async (ev) => {
-  const sel = ev.currentTarget;
-  const value = sel.value;
-  isoBusy = true;
-  sel.disabled = true;
-  try {
-    const r = await fetch("/api/iso", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value })
-    });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      flash(body.detail || ("HTTP " + r.status));
-    } else if (body.iso && body.iso !== value) {
+for (const sel of document.querySelectorAll("select[data-setting]")) {
+  sel.addEventListener("change", async () => {
+    const name = sel.dataset.setting, value = sel.value;
+    const label = SETTING_LABEL[name];
+    settingBusy[name] = true;
+    sel.disabled = true;
+    const reply = await post("/api/setting", { name, value });
+    if (reply && reply.value && reply.value !== value) {
       // The camera snaps to the value allowed in the current mode.
-      flash("The camera chose ISO " + body.iso + " instead of " + value, "Adjusted");
+      flash("The camera chose " + label(reply.value) + " instead of " + label(value), "Adjusted");
     }
-  } catch (err) {
-    flash("ISO not set: " + (err && err.message || err));
+    settingBusy[name] = false;
+    poll();
+  });
+}
+
+/* ---- Focus steps ---------------------------------------------------- */
+// One step per click; held, the steps repeat. The camera has no call that
+// only reads the lens position, so it is known after the first step.
+
+let focusShown = null;
+let focusTimer = null;
+let focusInFlight = false;
+
+function fmtFocus(f) {
+  if (!f) return "--";
+  if (f.distance_mm) {
+    const m = f.distance_mm / 1000;
+    return "≈ " + (m >= 10 ? m.toFixed(0) : m.toFixed(1)) + " m";
   }
-  isoBusy = false;
-  poll();
+  return f.position + " / " + f.max;
+}
+
+function renderFocus(s) {
+  const live = !!s && s.status === "online" && !s.media;
+  el("focus-far").disabled = el("focus-near").disabled = !live;
+  el("touch").disabled = !live;
+  if (!live && touchOn) setTouch(false);
+  if (s && s.focus && !focusInFlight) focusShown = s.focus;
+  el("focus-pos").textContent = fmtFocus(focusShown);
+}
+
+async function focusStep(direction) {
+  if (el("focus-far").disabled) { stopFocus(); return; }
+  if (focusInFlight) return;
+  focusInFlight = true;
+  const reply = await post("/api/focus", { direction });
+  if (reply && reply.focus) {
+    focusShown = reply.focus;
+    el("focus-pos").textContent = fmtFocus(focusShown);
+  } else {
+    stopFocus();
+  }
+  focusInFlight = false;
+}
+
+function stopFocus() {
+  clearInterval(focusTimer);
+  focusTimer = null;
+}
+// A release that never reaches the button (the window loses focus, the
+// button is disabled under the finger) must not leave the lens moving.
+for (const name of ["pointerup", "pointercancel", "blur"]) window.addEventListener(name, stopFocus);
+document.addEventListener("visibilitychange", stopFocus);
+
+for (const [id, direction] of [["focus-far", "far"], ["focus-near", "near"]]) {
+  const button = el(id);
+  button.addEventListener("pointerdown", (ev) => {
+    if (button.disabled || ev.button > 0) return;
+    stopFocus();
+    focusStep(direction);
+    focusTimer = setInterval(() => focusStep(direction), 250);
+  });
+  for (const name of ["pointerup", "pointerleave", "pointercancel"]) {
+    button.addEventListener(name, stopFocus);
+  }
+  button.addEventListener("contextmenu", (ev) => ev.preventDefault());
+}
+
+/* ---- Touch focus ---------------------------------------------------- */
+// Off unless switched on, and off again on every load: on a tablet a hand
+// brushing the picture must not move the focus.
+
+let touchOn = false;
+let touchLast = 0;
+let touchMarkTimer = null;
+
+function setTouch(on) {
+  touchOn = on;
+  body.classList.toggle("touch-on", on);
+  el("touch").setAttribute("aria-pressed", on ? "true" : "false");
+  el("touch").textContent = on ? "Touch focus on" : "Touch focus off";
+}
+
+el("more").addEventListener("click", (ev) => {
+  const open = !body.classList.contains("more");
+  body.classList.toggle("more", open);
+  // Closing More takes the switch for touch focus away, so it goes off:
+  // a tap must not move the focus with nothing in the bar saying it would.
+  if (!open && touchOn) setTouch(false);
+  ev.currentTarget.setAttribute("aria-expanded", open ? "true" : "false");
+  ev.currentTarget.blur();
 });
+
+el("touch").addEventListener("click", (ev) => {
+  ev.currentTarget.blur();
+  setTouch(!touchOn);
+});
+
+// Where on the picture a tap landed, 0 to 1000 each way; null outside it.
+// The picture is letterboxed inside its box (object-fit: contain).
+function picturePoint(ev) {
+  const box = view.getBoundingClientRect();
+  const w = view.naturalWidth, h = view.naturalHeight;
+  if (!w || !h || !box.width || !box.height) return null;
+  const scale = Math.min(box.width / w, box.height / h);
+  const left = box.left + (box.width - w * scale) / 2;
+  const top = box.top + (box.height - h * scale) / 2;
+  const x = (ev.clientX - left) / (w * scale), y = (ev.clientY - top) / (h * scale);
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x: Math.round(x * 1000), y: Math.round(y * 1000) };
+}
+
+async function touchFocus(ev) {
+  const point = picturePoint(ev);
+  // The camera refuses a second touch right after the first.
+  if (!point || ev.timeStamp - touchLast < 1500) return;
+  touchLast = ev.timeStamp;
+  const frame = stage.getBoundingClientRect();
+  const mark = el("touch-mark");
+  mark.style.left = (ev.clientX - frame.left) + "px";
+  mark.style.top = (ev.clientY - frame.top) + "px";
+  mark.classList.add("show");
+  clearTimeout(touchMarkTimer);
+  touchMarkTimer = setTimeout(() => mark.classList.remove("show"), 1500);
+  if (!await post("/api/touch", point)) mark.classList.remove("show");
+}
 
 function setButtons(canStart, canStop) {
   // Autofocus works in manual focus too; confirmed on the device.
   el("af").disabled    = !(lastStatus && lastStatus.status === "online");
   el("start").disabled = !canStart;
   el("stop").disabled  = !canStop;
+  // The cards need a session and no recording: playback would end it.
+  const s = lastStatus;
+  el("cards").disabled = !(s && !s.recording && !s.media
+                           && (s.status === "online" || s.status === "standby"));
 }
 
 function overlay(show, title, hint, detail) {
@@ -590,6 +1007,35 @@ function fmtBatt(v) {
   return String(v).replace(/_/g, " ");
 }
 
+function fmtClock(seconds) {
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+}
+
+/* ---- A recording that ended without a Stop from here ---------------- */
+// The reason comes from the camera. Acknowledged per browser, so a tablet
+// on the tripod and a phone in the pocket each get to see it.
+
+let noticeSeen = 0;
+try { noticeSeen = Number(localStorage.getItem("noticeSeen")) || 0; } catch (e) { /* private mode */ }
+
+function renderNotice(s) {
+  const end = s.rec_end;
+  const show = !!end && !s.recording && end.at > noticeSeen;
+  el("notice").classList.toggle("show", show);
+  if (!show) return;
+  const at = new Date(end.at * 1000);
+  el("notice-text").textContent = end.text + " · "
+    + String(at.getHours()).padStart(2, "0") + ":" + String(at.getMinutes()).padStart(2, "0");
+  el("notice").dataset.at = end.at;
+}
+
+el("notice-close").addEventListener("click", () => {
+  noticeSeen = Number(el("notice").dataset.at) || Date.now() / 1000;
+  try { localStorage.setItem("noticeSeen", String(noticeSeen)); } catch (e) { /* not kept */ }
+  el("notice").classList.remove("show");
+});
+
 function fmtRemaining(v) {
   const n = parseInt(v, 10);
   if (!isFinite(n) || n <= 0) return "--";
@@ -599,18 +1045,27 @@ function fmtRemaining(v) {
 
 /* ---- Commands ------------------------------------------------------ */
 
-async function send(path, button) {
-  button.disabled = true;
+// POST a command. A refusal or a failed delivery is flashed here; the
+// caller gets the reply object, or null.
+async function post(path, payload) {
   try {
-    const r = await fetch(path, { method: "POST" });
-    if (!r.ok) {
-      let detail = "HTTP " + r.status;
-      try { detail = (await r.json()).detail || detail; } catch (e) { /* keep the status */ }
-      flash(detail);
-    }
+    const r = await fetch(path, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : {},
+      body: payload ? JSON.stringify(payload) : undefined
+    });
+    const reply = await r.json().catch(() => ({}));
+    if (r.ok) return reply;
+    flash(reply.detail || ("HTTP " + r.status));
   } catch (err) {
     flash("Command not delivered: " + (err && err.message || err));
   }
+  return null;
+}
+
+async function send(path, button) {
+  button.disabled = true;
+  await post(path);
   // The state comes from the camera, not from an assumption here.
   poll();
 }
@@ -623,6 +1078,193 @@ function flash(message, label) {
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => f.classList.remove("show"), 5000);
 }
+
+/* ---- Cards --------------------------------------------------------- */
+// The list is rebuilt only when its rows change; progress is written into
+// the existing rows, so a button under the finger stays where it is.
+
+let mediaOpen = false;
+let mediaTimer = null;
+let mediaRev = null;        // revision of the list held in mediaItems
+let mediaItems = [];
+let mediaRows = new Map();  // id -> the row's nodes and what they show
+
+function setMedia(open) {
+  if (open === mediaOpen) return;
+  mediaOpen = open;
+  body.classList.toggle("media", open);
+  clearTimeout(mediaTimer);
+  mediaTimer = null;
+  if (open) {
+    if (body.classList.contains("full")) leaveFull();
+    mediaRev = null;
+    mediaItems = [];
+    mediaRows = new Map();
+    el("media-list").innerHTML = "";
+    pollMedia();
+  } else {
+    openStream();
+  }
+}
+
+// One poll after the other, never two at once. After the first reply only
+// the files that changed come: a card can hold thousands, and a download
+// changes one. Nothing is fetched for a tab nobody looks at.
+async function pollMedia() {
+  clearTimeout(mediaTimer);
+  mediaTimer = null;
+  if (!mediaOpen) return;
+  if (!document.hidden) {
+    try {
+      const r = await fetch("/api/media" + (mediaRev == null ? "" : "?rev=" + mediaRev),
+                            { cache: "no-store" });
+      if (r.ok) renderMedia(await r.json());
+    } catch (err) { /* the state poll reports a dead service */ }
+  }
+  if (mediaOpen && !mediaTimer) mediaTimer = setTimeout(pollMedia, 1000);
+}
+document.addEventListener("visibilitychange", () => {
+  if (mediaOpen && !document.hidden) pollMedia();
+});
+
+function fmtSize(n) {
+  if (!n) return "--";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+  return (n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i];
+}
+
+function fmtDuration(seconds) {
+  if (seconds == null) return "";
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60);
+  return h ? h + " h " + m + " min" : m + " min";
+}
+
+function renderMedia(m) {
+  if (m.items) {
+    mediaItems = m.items;
+  } else {
+    const byId = new Map((m.changed || []).map((i) => [i.id, i]));
+    if (byId.size) mediaItems = mediaItems.map((i) => byId.get(i.id) || i);
+  }
+  mediaRev = m.rev;
+  const items = mediaItems;
+  const total = items.reduce((sum, i) => sum + i.size, 0);
+  const done = items.filter((i) => i.state === "done").length;
+
+  let note = m.folder_problem || m.list_error || "";
+  if (!note && lastStatus && lastStatus.status === "media" && lastStatus.error) note = lastStatus.error;
+  el("media-note").textContent = note;
+  el("media-note").classList.toggle("show", !!note);
+
+  el("media-summary").textContent = !m.listed
+    ? (m.ready ? "Reading the cards" : "Switching the camera to playback")
+    : items.length + (items.length === 1 ? " file, " : " files, ") + fmtSize(total)
+      + (done ? ", " + done + " already saved" : "")
+      + (m.free != null ? " · " + fmtSize(m.free) + " free in the folder" : "");
+
+  const busy = m.queued > 0;
+  el("media-all").disabled = !m.listed || !!m.folder_problem || done === items.length;
+  el("media-cancel").disabled = !busy;
+  el("media-refresh").disabled = busy || !m.ready;
+
+  el("media-total").classList.toggle("show", busy);
+  if (busy) {
+    el("media-total-text").textContent = m.queued + (m.queued === 1 ? " file" : " files")
+      + " to go, " + fmtSize(m.remaining)
+      + (m.rate ? " · " + (m.rate * 8 / 1e6).toFixed(0) + " Mbit/s" : " · waiting for the camera")
+      + (m.eta == null ? "" : m.eta < 60 ? " · less than a minute left"
+                                         : " · about " + fmtDuration(m.eta) + " left");
+    el("media-total-bar").style.width =
+      (m.queued_size ? 100 * (m.queued_size - m.remaining) / m.queued_size : 0).toFixed(1) + "%";
+  }
+
+  el("media-empty").style.display = m.listed && !items.length ? "block" : "none";
+  if (m.items) buildRows(items);
+  for (const item of items) {
+    const progress = (m.progress || {})[item.id];
+    if (progress != null) item.done = progress;
+    renderRow(item, !!m.folder_problem);
+  }
+}
+
+// The rows are rebuilt only when the list of files changed, so a button
+// under the finger stays where it is.
+function buildRows(items) {
+  const ids = items.map((i) => i.id);
+  if (ids.length === mediaRows.size && ids.every((id) => mediaRows.has(id))) return;
+  const list = el("media-list");
+  list.innerHTML = "";
+  mediaRows = new Map();
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.dataset.id = item.id;
+    const img = document.createElement("img");
+    img.className = "thumb";
+    img.alt = "";
+    img.loading = "lazy";   // fetched when scrolled to, not all at once
+    const text = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "name";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.appendChild(document.createElement("i"));
+    text.append(name, meta, bar);
+    const button = document.createElement("button");
+    button.className = "btn btn--on-ink";
+    button.type = "button";
+    button.addEventListener("click", () => mediaCommand("/api/media/download", { ids: [item.id] }));
+    li.append(img, text, button);
+    list.appendChild(li);
+    mediaRows.set(item.id, { img, name, meta, bar, button, shown: "" });
+  }
+}
+
+// Written only when something the row shows changed: of thousands of rows,
+// a download moves one.
+function renderRow(item, folderProblem) {
+  const row = mediaRows.get(item.id);
+  if (!row) return;
+  const percent = item.size ? (100 * item.done / item.size).toFixed(1) : "0.0";
+  const shown = [item.name, item.size, item.state, item.error, item.thumb,
+                 item.state === "active" ? percent : "", folderProblem].join("|");
+  if (shown === row.shown) return;
+  row.shown = shown;
+  if (item.thumb && !row.img.getAttribute("src")) {
+    row.img.src = "/api/media/thumb/" + encodeURIComponent(item.id);
+  }
+  row.name.textContent = item.name;
+  const parts = [];
+  if (item.slot) parts.push("Card " + item.slot.replace(/^sd/, ""));
+  if (item.duration) parts.push(item.duration);
+  parts.push(fmtSize(item.size));
+  if (item.state === "active") parts.push("downloading, " + percent + " %");
+  else if (item.state === "queued") parts.push("waiting");
+  else if (item.state === "done") parts.push("saved");
+  else if (item.state === "failed") parts.push("failed: " + item.error);
+  row.meta.textContent = parts.join(" · ");
+  row.meta.classList.toggle("failed", item.state === "failed");
+  row.bar.style.visibility = item.state === "active" ? "visible" : "hidden";
+  row.bar.firstChild.style.width = percent + "%";
+  row.button.textContent = item.state === "done" ? "Saved"
+                         : item.state === "failed" ? "Try again" : "Download";
+  row.button.disabled = folderProblem || ["done", "queued", "active"].includes(item.state);
+}
+
+async function mediaCommand(path, payload) {
+  await post(path, payload);
+  await poll();
+  pollMedia();
+}
+
+el("cards").addEventListener("click", () => mediaCommand("/api/media/open"));
+el("media-close").addEventListener("click", () => mediaCommand("/api/media/close"));
+el("media-all").addEventListener("click", () => mediaCommand("/api/media/download", { all: true }));
+el("media-cancel").addEventListener("click", () => mediaCommand("/api/media/cancel"));
+el("media-refresh").addEventListener("click", () => mediaCommand("/api/media/refresh"));
 
 el("af").addEventListener("click",    (e) => send("/api/af", e.currentTarget));
 el("start").addEventListener("click", (e) => send("/api/rec/start", e.currentTarget));
@@ -650,7 +1292,7 @@ document.addEventListener("keydown", (ev) => {
   } else if ((ev.key === "f" || ev.key === "F") && ev.target.tagName !== "SELECT") {
     if (!el("af").disabled) el("af").click();
   } else if ((ev.key === "v" || ev.key === "V") && ev.target.tagName !== "SELECT") {
-    toggleFull();
+    if (!mediaOpen) toggleFull();
   } else if (ev.key === "Escape" && body.classList.contains("full") && !fullscreenElement()) {
     // Hidden bar without real full screen: Esc leaves it as well.
     leaveFull();
@@ -730,7 +1372,13 @@ el("full").addEventListener("click", (e) => {
 // hand: Safari on the iPhone does not reliably send dblclick for taps.
 let lastTap = { time: 0, x: 0, y: 0 };
 stage.addEventListener("pointerup", (ev) => {
-  if (ev.target.closest("#full")) return;
+  if (ev.target.closest("#full") || ev.target.closest("#notice") || mediaOpen) return;
+  if (touchOn) {
+    // A tap is a focus point now, so the double-tap for full screen rests;
+    // the corner button and V still switch it.
+    touchFocus(ev);
+    return;
+  }
   const near = Math.abs(ev.clientX - lastTap.x) < 40 && Math.abs(ev.clientY - lastTap.y) < 40;
   if (ev.timeStamp - lastTap.time < 350 && near) {
     lastTap = { time: 0, x: 0, y: 0 };

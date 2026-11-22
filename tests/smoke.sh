@@ -31,6 +31,14 @@ wait_for_exit() {
     return 1
 }
 
+wait_healthy() {
+    for _ in $(seq 1 30); do
+        [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] && return 0
+        sleep 2
+    done
+    fail "not healthy"
+}
+
 # HTTP request from inside the container; prints the status code.
 request() { # path
     docker exec -i "$NAME" python3 - "$1" <<'PY'
@@ -78,11 +86,7 @@ refused 'PUID and PGID must be numeric' -e PUID=abc -e LUMIX_CAMERA_IP="$CAMERA"
 echo "== start"
 docker run -d --name "$NAME" "${HARDENING[@]}" -e PUID="$PUID" -e PGID="$PGID" \
     -e TZ=Europe/Berlin -e LUMIX_CAMERA_IP="$CAMERA" "$IMAGE" >/dev/null
-for _ in $(seq 1 30); do
-    [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] && break
-    sleep 2
-done
-[[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] || fail "not healthy"
+wait_healthy
 in_log 'BASED ON IMAGES FROM LINUXSERVER\.IO' || fail "the start banner is not ours"
 if in_log 'Based on images from linuxserver\.io'; then fail "the base image's banner is still shown"; fi
 in_log '^\{"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}(Z|[+-][0-9:]{5})","level":"INFO","event":"starting","version":"[0-9]+\.[0-9]+\.[0-9]+"' \
@@ -141,6 +145,27 @@ echo "== foreign host names are refused (DNS rebinding)"
 [[ $(post /api/af '' 'Host:tower:8080' 'Sec-Fetch-Site:same-origin') == 409 ]] \
     || fail "a command under a LAN host name was refused"
 
+echo "== the event port listens"
+docker exec "$NAME" python3 -c 'import os, socket; socket.create_connection(("127.0.0.1", int(os.environ["LUMIX_EVENT_PORT"])), 3)' \
+    || fail "nothing listens on LUMIX_EVENT_PORT"
+if in_log 'events_port_unusable'; then fail "the event port could not be opened"; fi
+
+echo "== the cards view"
+media() { # prints one field of /api/media
+    docker exec -i "$NAME" python3 - "$1" <<'PY'
+import json, os, sys, urllib.request
+url = f"http://127.0.0.1:{os.environ['LUMIX_WEB_PORT']}/api/media"
+print(json.load(urllib.request.urlopen(url, timeout=5))[sys.argv[1]])
+PY
+}
+# No folder mapped: /downloads is an anonymous volume and must not be used.
+[[ $(media folder_problem) == *"No folder is mapped"* ]] \
+    || fail "an unmapped /downloads is not refused: '$(media folder_problem)'"
+[[ $(post /api/media/open '' 'Sec-Fetch-Site:cross-site') == 403 ]] || fail "cross-site open not refused"
+[[ $(post /api/media/open '' 'Sec-Fetch-Site:same-origin') == 409 ]] || fail "the cards opened without a camera"
+[[ $(post /api/media/download '{"ids":[]}' 'Sec-Fetch-Site:same-origin') == 400 ]] \
+    || fail "an empty download request is not a 400"
+
 echo "== ordered shutdown"
 # SIGTERM must reach the Python process: only then its lifespan handler runs
 # and sends stopstream. Without it, s6 kills the app after
@@ -149,5 +174,21 @@ docker stop -t 30 "$NAME" >/dev/null
 CODE=$(docker inspect -f '{{.State.ExitCode}}' "$NAME")
 [[ $CODE == 0 ]] || fail "exit code $CODE instead of 0"
 in_log '"event":"shutting_down"' || fail "the app did not shut down in order"
+
+echo "== a mapped download folder is usable"
+docker rm -f "$NAME" >/dev/null
+DOWNLOADS=$(mktemp -d)
+# As Docker creates a missing host folder: owned by root.
+docker run --rm -v "$DOWNLOADS":/d --entrypoint chown "$IMAGE" 0:0 /d
+docker run -d --name "$NAME" "${HARDENING[@]}" -e PUID="$PUID" -e PGID="$PGID" \
+    -e UMASK=002 -e LUMIX_CAMERA_IP="$CAMERA" -v "$DOWNLOADS":/downloads "$IMAGE" >/dev/null
+wait_healthy
+[[ $(media folder_problem) == "" ]] || fail "a mapped folder is refused: '$(media folder_problem)'"
+[[ $(docker exec "$NAME" stat -c %u /downloads) == "$PUID" ]] || fail "/downloads was not handed to abc"
+# With UMASK=002 the group may delete what the app saved: write access to the folder.
+[[ $(docker exec "$NAME" stat -c %a /downloads) == 775 ]] \
+    || fail "/downloads has mode $(docker exec "$NAME" stat -c %a /downloads), not 775"
+docker stop -t 30 "$NAME" >/dev/null
+rmdir "$DOWNLOADS"
 
 echo "OK"

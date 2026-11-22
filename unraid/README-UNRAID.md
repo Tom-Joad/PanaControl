@@ -54,12 +54,27 @@ docker run -d \
   --security-opt no-new-privileges \
   -e PUID=99 -e PGID=100 -e TZ=Europe/Berlin \
   -e LUMIX_CAMERA_IP=192.0.2.10 \
+  -v /mnt/user/media/panacontrol:/downloads \
   ghcr.io/tom-joad/panacontrol:latest
 ```
 
 The image is built on linuxserver.io's Alpine base: it starts as root,
 prepares the `abc` user with `PUID:PGID` and runs the app as that user. The
-app writes no files and needs no path.
+only path is **Downloads** (`/downloads`), where the files you download from
+the camera's cards are saved; there is no `/config`.
+
+A container installed before the download existed has no **Downloads**
+path. Everything else works as before; to use the download, open `Edit`,
+choose **Add another Path, Port, Variable, Label or Device**, and add a path
+with the container path `/downloads` and a folder on a share, for example
+`/mnt/user/media/panacontrol`. Until then the **Cards** view says that no
+folder is mapped.
+
+The downloaded files belong to `PUID:PGID` (`nobody:users`). To move or
+delete them from a share as another user, the container needs the variable
+`UMASK` set to `002`; a container installed from an older template may lack
+it. A folder that Docker created before version 3.4.0 handled this keeps its
+mode: `chmod 775` it once, or run Unraid's **New Permissions** on the share.
 
 ## Settings
 
@@ -68,10 +83,11 @@ app writes no files and needs no path.
 | `PUID` | `99` | User the app runs as (`nobody`), not `0` |
 | `PGID` | `100` | Group the app runs as (`users`), not `0` |
 | `TZ` | `Etc/UTC` | Time zone of the log time stamps, e.g. `Europe/Berlin` |
-| `UMASK` | `002` | File mode mask; the app writes no files |
+| `UMASK` | `002` | File mode mask for the downloaded files |
 | `LUMIX_CAMERA_IP` | -- | The camera's address, required |
 | `LUMIX_DEVICE_NAME` | `lumix-remote` | Name shown on the camera's display during registration |
 | `LUMIX_STREAM_PORT` | `49199` | UDP port for the live view |
+| `LUMIX_EVENT_PORT` | `49198` | TCP port the camera reports its events to (recording started or ended, and why); `0` switches them off |
 | `LUMIX_WEB_HOST` | `0.0.0.0` | Where the app listens in the container; leave it |
 | `LUMIX_WEB_PORT` | `8080` | Port of the interface |
 | `LUMIX_ALLOWED_HOSTS` | -- | Host names the interface answers to besides IP addresses, single words (`tower`) and `*.local`, e.g. a reverse proxy's name; comma-separated. Any other name is refused with `403` |
@@ -92,7 +108,8 @@ Without NAT, the same stream ran for seven minutes without a single gap.
 
 With `br0` and a fixed IP, the container has its own address on the LAN and
 there is no translation at all. No port mappings are needed: the interface
-is at `LUMIX_WEB_PORT` of that address, the live view at `LUMIX_STREAM_PORT`.
+is at `LUMIX_WEB_PORT` of that address, the live view at `LUMIX_STREAM_PORT`,
+and the camera reports its events to `LUMIX_EVENT_PORT`.
 
 `host` works as well, with the interface on the server's own address. If you
 must use bridge with port mapping, the UDP port needs the same number on both

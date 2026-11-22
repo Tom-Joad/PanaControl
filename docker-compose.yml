@@ -21,12 +21,20 @@ services:
       LUMIX_CAMERA_IP: ${LUMIX_CAMERA_IP:?set the camera's address in .env}
       LUMIX_DEVICE_NAME: ${LUMIX_DEVICE_NAME:-lumix-remote}
       LUMIX_STREAM_PORT: ${LUMIX_STREAM_PORT:-49199}
+      LUMIX_EVENT_PORT: ${LUMIX_EVENT_PORT:-49198}
+      # With port mapping the camera has to be told the host's address.
+      LUMIX_EVENT_HOST: ${LUMIX_EVENT_HOST:-}
       LUMIX_WEB_HOST: 0.0.0.0
       LUMIX_WEB_PORT: 8080
       LUMIX_LOG_LEVEL: ${LUMIX_LOG_LEVEL:-INFO}
       # Host names other than an IP address, a single word or *.local, e.g.
       # behind a reverse proxy (comma-separated).
       LUMIX_ALLOWED_HOSTS: ${LUMIX_ALLOWED_HOSTS:-}
+
+    # Where files from the camera's cards are saved. Without this mapping
+    # the download is switched off.
+    volumes:
+      - ${LUMIX_DOWNLOADS:-./downloads}:/downloads
 
     ports:
       - "${LUMIX_WEB_BIND:-127.0.0.1}:8080:8080/tcp"
@@ -35,6 +43,8 @@ services:
       # address, so the port number must be the same on both sides, or no
       # picture arrives.
       - "${LUMIX_STREAM_PORT:-49199}:${LUMIX_STREAM_PORT:-49199}/udp"
+      # The camera connects here to report events; same number on both sides.
+      - "${LUMIX_EVENT_PORT:-49198}:${LUMIX_EVENT_PORT:-49198}/tcp"
 
     # stopstream takes time. If the process is killed before, the camera's
     # remote session stays occupied until the camera is power-cycled.

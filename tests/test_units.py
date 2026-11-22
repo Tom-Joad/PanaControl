@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+import socket
+import threading
 import time
 
 import pytest
@@ -58,8 +60,8 @@ def test_iso_values_come_from_the_menu_without_duplicates():
         <item cmd_mode="setsetting" cmd_type="iso" cmd_value="200"/>
         <item cmd_mode="setsetting" cmd_type="iso" cmd_value="200"/>
         <item cmd_mode="setsetting" cmd_type="shtrspeed" cmd_value="1/50"/></menuset>"""
-    assert appmod.iso_values_from_menu(menu) == ["auto", "200"]
-    assert appmod.iso_values_from_menu("not xml") == []
+    assert appmod.values_from_menu(menu, "iso") == ["auto", "200"]
+    assert appmod.values_from_menu("not xml", "iso") == []
 
 
 def _camera_with_reply(monkeypatch, body: str | None, status: int = 200):
@@ -1094,7 +1096,7 @@ def iso_controller(monkeypatch):
     monkeypatch.setattr(appmod.time, "sleep", lambda _: None)
     controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
     controller.camera = ScriptCamera()
-    controller._iso_values = ["auto", "200", "800"]
+    controller._setting_values["iso"] = ["auto", "200", "800"]
     return controller
 
 
@@ -1102,24 +1104,25 @@ def test_set_iso_returns_what_the_camera_took(iso_controller):
     # Measured: 400 was acknowledged and came back as 800.
     camera = iso_controller.camera
     camera.set_setting = lambda name, value: camera.settings.update({name: "800"})
-    assert iso_controller.set_iso("200") == "800"
+    assert iso_controller.set_setting("iso", "200") == "800"
     assert iso_controller.snapshot()["iso"] == "800"
 
 
 def test_set_iso_refuses_a_value_the_camera_does_not_offer(iso_controller):
     with pytest.raises(LumixError):
-        iso_controller.set_iso("12345")
+        iso_controller.set_setting("iso", "12345")
     assert iso_controller.camera.settings["iso"] == "200"
 
 
 def test_set_iso_without_a_known_list_passes_the_value_on(iso_controller):
-    iso_controller._iso_values = []
-    assert iso_controller.set_iso("3200") == "3200"
+    iso_controller._setting_values["iso"] = []
+    assert iso_controller.set_setting("iso", "3200") == "3200"
 
 
 def test_the_iso_route_answers_with_the_adopted_value():
     class IsoController:
-        def set_iso(self, value):
+        def set_setting(self, name, value):
+            assert name == "iso"
             if value == "bad":
                 raise LumixError("not available")
             return "800"
@@ -1215,6 +1218,303 @@ def test_datagram_layout_compares_computed_and_found_jpeg_start():
     assert not mediaprobe.datagram_layout(b"short")["matches"]
 
 
+# --------------------------------------------------------------- media ---
+
+import httpx  # noqa: E402
+
+from lumixremote import media as mediamod  # noqa: E402
+
+
+class FakeSession:
+    """Stands in for the controller: the media view is open and ready."""
+
+    def __init__(self):
+        self.media_wanted = True
+        self.media_ready = True
+
+    def media_headers(self):
+        return {"X-SESSION_ID": "0123456789abcdef"}
+
+    def content_count(self):
+        return 1
+
+    slots: list[str] = []
+
+    def card_slots(self):
+        return list(self.slots)
+
+    def select_slot(self, slot):
+        self.selected = getattr(self, "selected", []) + [slot]
+
+
+CLIP = bytes(range(256)) * 40          # 10240 bytes
+
+
+def _listing(size: int = len(CLIP)) -> str:
+    didl = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        '<item id="0110001" parentID="0">'
+        '<upnp:class name="videoItem">object.item.videoItem.movie</upnp:class>'
+        '<res protocolInfo="http-get:*:application/octet-stream:PANASONIC.COM_PN='
+        f"CAM_AVC_MOV_ORG;OriginalFileName='P1000001.MOV'\" duration=\"0:00:08\" size=\"{size}\">"
+        "http://192.0.2.10:50001/DO0110001.MOV</res>"
+        '<res protocolInfo="http-get:*:image/jpeg:PANASONIC.COM_PN=CAM_TN" size="5000">'
+        "http://192.0.2.10:50001/DT0110001.JPG</res>"
+        "</item></DIDL-Lite>"
+    ).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (f"<e><b><r><Result>{didl}</Result><NumberReturned>1</NumberReturned>"
+            "<TotalMatches>1</TotalMatches></r></b></e>")
+
+
+class FakeCard:
+    """The camera's ports 60606 and 50001 as far as the downloader uses them."""
+
+    def __init__(self, cut_after: int | None = None):
+        self.cut_after = cut_after      # bytes after which the first reply breaks
+        self.ranges: list[str] = []
+        self.headers: list[dict] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/Server0/CDS_control":
+            return httpx.Response(200, text=_listing())
+        if request.url.path.endswith(".JPG"):
+            return httpx.Response(200, content=b"\xff\xd8thumb\xff\xd9")
+        self.headers.append(dict(request.headers))
+        asked = request.headers.get("range", "")
+        self.ranges.append(asked)
+        if asked:
+            start = int(asked.removeprefix("bytes=").rstrip("-"))
+            return httpx.Response(206, content=CLIP[start:], headers={
+                "Content-Range": f"bytes {start}-{len(CLIP) - 1}/{len(CLIP)}"})
+        if self.cut_after is not None:
+            cut, self.cut_after = self.cut_after, None
+
+            def broken():
+                yield CLIP[:cut]
+                raise httpx.ReadError("connection lost")
+
+            return httpx.Response(200, content=broken())
+        return httpx.Response(200, content=CLIP, headers={"X-FILE_SIZE": str(len(CLIP))})
+
+
+@pytest.fixture
+def card(tmp_path, monkeypatch):
+    """A manager on a fake card, with the waits shortened."""
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.05)
+    monkeypatch.setattr(mediamod.MediaManager, "RESERVE", 0)
+    # Small chunks: what arrived before a break is in the part file.
+    monkeypatch.setattr(mediamod.MediaManager, "CHUNK", 1000)
+    managers = []
+
+    def make(fake: FakeCard, session: FakeSession | None = None):
+        manager = mediamod.MediaManager(session or FakeSession(), "192.0.2.10", tmp_path,
+                                        transport=httpx.MockTransport(fake))
+        managers.append(manager)
+        return manager
+
+    yield make
+    for manager in managers:
+        manager.stop()
+
+
+def _wait(check, seconds: float = 5.0):
+    assert _until(check, seconds), "condition not reached"
+
+
+def _item(manager):
+    items = manager.snapshot()["items"]
+    return items[0] if items else {}
+
+
+def test_the_card_is_listed_and_a_file_downloaded(card, tmp_path):
+    fake = FakeCard()
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    item = _item(manager)
+    assert (item["name"], item["size"], item["video"]) == ("P1000001.MOV", len(CLIP), True)
+    _wait(lambda: _item(manager)["thumb"])
+    assert manager.thumbnail("0110001").startswith(b"\xff\xd8")
+
+    assert manager.enqueue(None) == 1
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+    assert not list(tmp_path.glob("*.part"))
+    # The download carries the session, like the phone app's.
+    assert fake.headers[0]["x-session_id"] == "0123456789abcdef"
+
+
+def test_a_broken_download_continues_where_it_stopped(card, tmp_path):
+    fake = FakeCard(cut_after=3000)
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(["0110001"])
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert fake.ranges == ["", "bytes=3000-"]
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_part_file_from_an_earlier_run_is_continued(card, tmp_path):
+    (tmp_path / f"P1000001.MOV.{len(CLIP)}.part").write_bytes(CLIP[:4096])
+    fake = FakeCard()
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert fake.ranges == ["bytes=4096-"]
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_file_already_in_the_folder_counts_as_saved(card, tmp_path):
+    (tmp_path / "P1000001.MOV").write_bytes(CLIP)
+    fake = FakeCard()
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    assert _item(manager)["state"] == "done"
+    assert manager.enqueue(None) == 0
+    assert fake.ranges == []
+
+
+def test_another_file_of_the_same_name_is_not_overwritten(card, tmp_path):
+    (tmp_path / "P1000001.MOV").write_bytes(b"an older clip with the same number")
+    manager = card(FakeCard())
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes().startswith(b"an older clip")
+    assert (tmp_path / "P1000001-2.MOV").read_bytes() == CLIP
+
+
+def test_closing_the_view_stops_the_download_and_keeps_the_part(card, tmp_path, monkeypatch):
+    session = FakeSession()
+    fake = FakeCard(cut_after=2000)
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.5)
+    manager = card(fake, session)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    part = tmp_path / f"P1000001.MOV.{len(CLIP)}.part"
+    _wait(lambda: part.exists() and part.stat().st_size == 2000)
+    manager.close(lambda: setattr(session, "media_wanted", False))
+    _wait(lambda: not manager.busy)
+    assert part.stat().st_size == 2000
+    assert not (tmp_path / "P1000001.MOV").exists()
+
+
+def test_nothing_is_queued_without_a_usable_folder(tmp_path):
+    manager = mediamod.MediaManager(FakeSession(), "192.0.2.10", tmp_path / "missing",
+                                    transport=httpx.MockTransport(FakeCard()))
+    try:
+        _wait(lambda: manager.snapshot()["listed"])
+        with pytest.raises(LumixError, match="does not exist"):
+            manager.enqueue(None)
+        assert "does not exist" in manager.snapshot()["folder_problem"]
+    finally:
+        manager.stop()
+
+
+def test_an_unmapped_volume_is_not_a_download_folder(tmp_path):
+    mountinfo = tmp_path / "mountinfo"
+    hexid = "ab" * 32
+    mountinfo.write_text(
+        f"100 90 8:1 /var/lib/docker/volumes/{hexid}/_data {tmp_path} rw - ext4 /dev/sda1 rw\n")
+    assert "No folder is mapped" in mediamod.folder_problem(tmp_path, mountinfo)
+    mountinfo.write_text(
+        f"100 90 8:1 /var/lib/docker/volumes/clips/_data {tmp_path} rw - ext4 /dev/sda1 rw\n")
+    assert mediamod.folder_problem(tmp_path, mountinfo) == ""
+    assert "configured" in mediamod.folder_problem(None)
+
+
+def test_file_names_from_the_camera_stay_inside_the_folder():
+    assert mediamod.safe_name("../../etc/passwd", "x") == "passwd"
+    assert mediamod.safe_name("..", "fallback.bin") == "fallback.bin"
+    assert mediamod.safe_name("P1000001.MOV", "x") == "P1000001.MOV"
+
+
+# ---------------------------------------------------------- media view ---
+
+class PlaybackCamera(FakeCamera):
+    connected = True
+
+    def set_play_mode(self):
+        self.calls.append("playmode")
+
+    def set_rec_mode(self):
+        self.calls.append("recmode")
+
+    def stop_stream(self):
+        self.calls.append("stopstream")
+
+    def get_setting(self, name):
+        return ""
+
+    def get_state(self):
+        return CameraState(raw={"cammode": self.mode, "rec": self.rec})
+
+
+@pytest.fixture
+def viewer(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(appmod.time, "monotonic", lambda: clock["now"])
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    camera = controller.camera = PlaybackCamera()
+    camera.mode, camera.rec = "rec", "off"
+    controller._read_state()
+    return controller, camera, clock
+
+
+def test_opening_the_cards_switches_to_playback_and_closing_back(viewer):
+    controller, camera, clock = viewer
+    controller._streaming = True
+    controller.media_open()
+    controller._read_state()
+    assert camera.calls == ["stopstream", "playmode"]
+    assert not controller.media_ready
+
+    camera.mode = "play"
+    controller._read_state()
+    # No recmode while the view is open, unlike an ordinary drop into playback.
+    assert camera.calls == ["stopstream", "playmode"]
+    assert controller.media_ready and controller._status == "media"
+
+    controller.media_close()
+    controller._read_state()
+    assert camera.calls[-1] == "recmode"
+
+
+def test_playmode_is_not_repeated_every_poll(viewer):
+    controller, camera, clock = viewer
+    controller.media_open()
+    controller._read_state()
+    clock["now"] += 2
+    controller._read_state()
+    assert camera.calls.count("playmode") == 1
+    clock["now"] += 8
+    controller._read_state()
+    assert camera.calls.count("playmode") == 2
+
+
+def test_the_cards_and_a_recording_exclude_each_other(viewer):
+    controller, camera, _ = viewer
+    controller.media_open()
+    with pytest.raises(LumixError, match="close them"):
+        controller.rec_start()
+    assert "rec_start" not in camera.calls
+
+    controller.media_close()
+    controller.rec_start()
+    with pytest.raises(LumixError, match="recording is running"):
+        controller.media_open()
+
+
+def test_a_recording_started_on_the_camera_closes_the_cards(viewer):
+    controller, camera, _ = viewer
+    controller.media_open()
+    camera.rec = "on"
+    controller._read_state()
+    assert not controller.media_wanted
+    assert "playmode" not in camera.calls
+
+
 # ------------------------------------------------------------ appprobe ---
 
 from lumixremote import appprobe  # noqa: E402
@@ -1247,3 +1547,296 @@ def test_the_focus_position_is_read_from_the_reply():
     assert appprobe.focus_position("ok,512,1023,0,0") == 512
     assert appprobe.focus_position("err_param") is None
     assert appprobe.focus_position("ok") is None
+
+
+# -------------------------------------------------------------- events ---
+
+from lumixremote import events as eventsmod  # noqa: E402
+
+NOTIFY_STOPPED = (
+    '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property>'
+    "<X_Panasonic_Cam_VRec>err_UsrStp</X_Panasonic_Cam_VRec></e:property></e:propertyset>"
+)
+
+
+def test_a_notify_body_gives_its_properties():
+    assert eventsmod.parse_notify(NOTIFY_STOPPED) == {"X_Panasonic_Cam_VRec": "err_UsrStp"}
+    assert eventsmod.parse_notify("not xml") == {}
+
+
+class FakeEventCamera:
+    """The camera's event service: grants, renews and forgets subscriptions."""
+
+    def __init__(self):
+        self.requests: list[tuple[str, dict]] = []
+        self.known = True
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ddd"):
+            return httpx.Response(200, text=(
+                '<root xmlns="urn:schemas-upnp-org:device-1-0"><device><serviceList><service>'
+                "<serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>"
+                "<eventSubURL>/Server0/CMS_event</eventSubURL></service></serviceList>"
+                "</device></root>"))
+        self.requests.append((request.method, dict(request.headers)))
+        if request.method == "SUBSCRIBE" and "sid" in request.headers and not self.known:
+            return httpx.Response(412)
+        return httpx.Response(200, headers={"SID": "uuid:1", "TIMEOUT": "Second-300"})
+
+
+def _subscriber(fake, seen=None):
+    return eventsmod.EventSubscriber(
+        "127.0.0.1", 49198, lambda group, value: (seen or []).append((group, value)),
+        transport=httpx.MockTransport(fake))
+
+
+def test_the_subscription_names_a_callback_and_is_renewed_by_its_id():
+    fake = FakeEventCamera()
+    subscriber = _subscriber(fake)
+    assert subscriber._subscribe() and subscriber.subscribed
+    method, headers = fake.requests[0]
+    assert method == "SUBSCRIBE" and headers["nt"] == "upnp:event"
+    assert headers["callback"] == "<http://127.0.0.1:49198/Camera/event>"
+
+    assert subscriber._renew()
+    assert fake.requests[1][1]["sid"] == "uuid:1" and "callback" not in fake.requests[1][1]
+
+
+def test_a_forgotten_subscription_is_made_again():
+    # After the camera was switched off and on, a renewal gets 412.
+    fake = FakeEventCamera()
+    subscriber = _subscriber(fake)
+    subscriber._subscribe()
+    fake.known = False
+    assert subscriber._renew()
+    assert "callback" in fake.requests[-1][1]
+
+
+def test_only_the_camera_may_report_events():
+    seen: list = []
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    subscriber = eventsmod.EventSubscriber("127.0.0.1", port, lambda g, v: seen.append((g, v)),
+                                           transport=httpx.MockTransport(FakeEventCamera()))
+    server = subscriber._listen()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{port}/Camera/event"
+        assert httpx.request("NOTIFY", url, content=NOTIFY_STOPPED).status_code == 200
+        assert seen == [("VRec", "err_UsrStp")]
+        subscriber.camera_ip = "192.0.2.10"     # now the sender is a stranger
+        assert httpx.request("NOTIFY", url, content=NOTIFY_STOPPED).status_code == 403
+        assert len(seen) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_stop_on_the_camera_is_named_until_the_next_recording(viewer):
+    controller, camera, clock = viewer
+    controller.on_event("VRec", "start")
+    assert controller._rec_end is None
+    controller.on_event("VRec", "err_UsrStp")
+    assert controller._rec_end["text"] == "Stopped on the camera"
+    assert controller._last_poll == 0.0     # the state is read right away
+
+    controller.on_event("VRec", "err_Unknown")
+    assert "err_Unknown" in controller._rec_end["text"]
+    controller.on_event("VRec", "start")
+    assert controller._rec_end is None
+
+
+def test_a_stop_through_the_app_needs_no_note(viewer):
+    controller, _, _ = viewer
+    controller.on_event("VRec", "start")
+    controller.on_event("VRec", "done")
+    assert controller._rec_end is None
+
+
+def test_the_recording_time_is_the_cameras_counter_carried_on(viewer):
+    controller, camera, clock = viewer
+    state = CameraState(raw={"rec": "on", "progress_time": "40"})
+    controller._last_seen = clock["now"]
+    assert controller._rec_seconds(state) == 40
+    clock["now"] += 3
+    assert controller._rec_seconds(state) == 43
+    assert controller._rec_seconds(CameraState(raw={"rec": "off", "progress_time": "0"})) is None
+    assert controller._rec_seconds(CameraState(raw={"rec": "on"})) is None
+
+
+def test_the_event_port_may_be_switched_off(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMIX_CAMERA_IP", "192.0.2.10")
+    monkeypatch.setenv("LUMIX_EVENT_PORT", "0")
+    assert appmod.Config.load(tmp_path / "none.toml").event_port == 0
+    monkeypatch.setenv("LUMIX_EVENT_PORT", "70000")
+    with pytest.raises(SystemExit, match="LUMIX_EVENT_PORT"):
+        appmod.Config.load(tmp_path / "none.toml")
+
+
+def test_both_card_slots_are_listed_and_the_right_one_is_active_for_a_download(card, tmp_path, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "SLOT_SETTLE", 0.0)
+    session = FakeSession()
+    session.slots = ["sd2", "sd1"]
+    manager = card(FakeCard(), session)
+    _wait(lambda: manager.snapshot()["listed"])
+    items = manager.snapshot()["items"]
+    # The same file number on both cards stays two entries.
+    assert [(i["id"], i["slot"]) for i in items] == [("sd2:0110001", "sd2"), ("sd1:0110001", "sd1")]
+    assert session.selected[:2] == ["sd2", "sd1"]
+
+    manager.enqueue(["sd2:0110001"])
+    _wait(lambda: manager.snapshot()["items"][0]["state"] == "done")
+    # The listing ended on sd1, so the download had to switch back first.
+    assert "sd2" in session.selected[2:]
+
+
+def test_settings_of_the_bar_are_validated_set_and_read_back(viewer):
+    controller, camera, _ = viewer
+    sent = []
+    camera.set_setting = lambda name, value: sent.append((name, value))
+    camera.get_setting = lambda name: "-3"
+    controller._setting_values["exposure"] = ["-5", "0", "1/3"]
+    # Measured on the device: asked for -5, the camera adopted -3.
+    assert controller.set_setting("exposure", "-5") == "-3"
+    assert sent == [("exposure", "-5")]
+    assert controller.snapshot_settings()["exposure"]["value"] == "-3"
+    with pytest.raises(LumixError, match="not available"):
+        controller.set_setting("exposure", "9")
+    with pytest.raises(LumixError, match="can't be set"):
+        controller.set_setting("device_name", "x")
+
+
+def test_the_focus_reply_gives_position_and_an_estimated_distance():
+    reply = "ok,346,1024,0,0,1024,32000/214,16000/375,8000/536,4000/697,2000/858,0/0,0/0"
+    focus = appmod.focus_from_reply(reply)
+    assert (focus["position"], focus["max"]) == (346, 1024)
+    assert 16000 < focus["distance_mm"] < 32000
+    assert appmod.focus_from_reply("ok,10,1024")["distance_mm"] is None
+    assert appmod.focus_from_reply("ok") is None
+
+
+def test_focus_and_touch_need_the_live_view(viewer):
+    controller, camera, _ = viewer
+    camera.touch_focus = lambda x, y: camera.calls.append(f"touch {x}/{y}")
+    camera.focus_step = lambda nearer: "ok,349,1024,0,0,1024"
+    controller.touch_focus(500, 500)
+    assert controller.focus_step(True)["position"] == 349
+    controller.media_open()
+    with pytest.raises(LumixError, match="live view"):
+        controller.touch_focus(500, 500)
+    with pytest.raises(LumixError, match="live view"):
+        controller.focus_step(False)
+
+
+def test_the_slots_with_a_card_are_named_active_one_first(viewer):
+    controller, camera, _ = viewer
+    controller._state = CameraState(raw={"current_sd": "sd2", "sd_memory": "set", "sd2_memory": "set"})
+    assert controller.card_slots() == ["sd2", "sd1"]
+    controller._state = CameraState(raw={"current_sd": "sd1", "sd_memory": "set", "sd2_memory": "unset"})
+    assert controller.card_slots() == ["sd1"]
+    controller._state = CameraState(raw={})
+    assert controller.card_slots() == []
+
+
+def test_the_size_in_the_reply_outranks_the_one_in_the_listing(card, tmp_path):
+    # Placeholder sizes were seen in the listing (for the preview pictures).
+    class Lying(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                return httpx.Response(200, text=_listing(size=5000))
+            return super().__call__(request)
+
+    manager = card(Lying())
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+    assert _item(manager)["size"] == len(CLIP)
+
+
+def test_a_slot_that_cannot_be_selected_yet_is_an_interruption_not_the_end(card, tmp_path, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "SLOT_SETTLE", 0.0)
+
+    class Reconnecting(FakeSession):
+        slots = ["sd1"]
+        refusals = 0
+
+        def select_slot(self, slot):
+            super().select_slot(slot)
+            # Listing selects once; the download's first attempt is refused.
+            if len(self.selected) == 2:
+                self.refusals += 1
+                raise LumixError("no session context")
+
+    session = Reconnecting()
+    manager = card(FakeCard(cut_after=3000), session)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: manager.snapshot()["items"][0]["state"] == "done")
+    assert session.refusals == 1
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_listing_that_ends_after_the_view_was_closed_is_dropped(card, monkeypatch):
+    session = FakeSession()
+    release = threading.Event()
+
+    class Slow(FakeCard):
+        def __call__(self, request):
+            if request.url.path == "/Server0/CDS_control":
+                release.wait(5)
+            return super().__call__(request)
+
+    manager = card(Slow(), session)
+    _wait(lambda: manager.snapshot()["listing"])
+    manager.close(lambda: setattr(session, "media_wanted", False), wait=0.1)
+    release.set()
+    _wait(lambda: not manager.snapshot()["listing"])
+    assert manager.snapshot()["listed"] is False and manager.snapshot()["items"] == []
+    # Opened again, at once: the cards are read afresh.
+    session.media_wanted = True
+    _wait(lambda: manager.snapshot()["listed"])
+
+
+def test_the_touch_is_released_even_when_it_was_refused(monkeypatch):
+    camera = Camera("192.0.2.10")
+    camera.session_id = "0123456789abcdef"
+    sent = []
+
+    def get(url, params=None, headers=None):
+        sent.append(params["value2"])
+        result = "err_reject" if params["value2"] == "on" else "ok"
+        return httpx.Response(200, text=f"<camrply><result>{result}</result></camrply>")
+
+    monkeypatch.setattr(camera._client, "get", get)
+    with pytest.raises(LumixError):
+        camera.touch_focus(500, 500)
+    assert sent == ["on", "off"]
+
+
+def test_the_list_is_left_out_of_a_poll_while_it_is_unchanged(card):
+    manager = card(FakeCard())
+    _wait(lambda: manager.snapshot()["listed"] and _item(manager)["thumb"])
+    first = manager.snapshot()
+    again = manager.snapshot(first["rev"])
+    assert again["items"] is None and again["changed"] == [] and again["rev"] == first["rev"]
+    # A change to one file sends that file, not the list again.
+    manager.enqueue(None)
+    later = manager.snapshot(first["rev"])
+    assert later["items"] is None
+    assert [i["id"] for i in later["changed"]] == ["0110001"]
+    # A caller that knows nothing, or a revision the list has moved past or
+    # never reached, gets the whole list.
+    assert manager.snapshot()["items"] is not None
+    assert manager.snapshot(0)["items"] is not None
+    assert manager.snapshot(10 ** 6)["items"] is not None
+
+
+def test_commands_for_record_mode_are_refused_while_the_cards_are_open(viewer):
+    controller, camera, _ = viewer
+    controller.media_open()
+    for command in (controller.autofocus, lambda: controller.set_setting("iso", "800")):
+        with pytest.raises(LumixError, match="cards are open"):
+            command()

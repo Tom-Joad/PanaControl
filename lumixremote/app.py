@@ -6,6 +6,8 @@ Three strands run side by side:
     few seconds and kicks the stream when it stalls
   * `LiveStream` receives the UDP frames, unchanged
   * FastAPI serves the interface, the MJPEG output and the command routes
+  * `MediaManager` lists the cards and downloads files while the media view
+    is open
 
 Only one connection to the camera exists, no matter how many browsers watch.
 
@@ -30,12 +32,14 @@ from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__, logging_setup
 from .camera import BadReply, Camera, CameraState, LumixError, NotReachable
+from .events import EventSubscriber
+from .media import MediaManager
 from .stream import LiveStream
 
 log = logging.getLogger("lumixremote.app")
@@ -71,6 +75,13 @@ class Config:
     web_port: int = 8080
     # Host names besides the ones that can't be taken over (see host_allowed).
     allowed_hosts: tuple[str, ...] = ()
+    # Where files from the camera's cards are saved; empty switches that off.
+    download_dir: str = ""
+    # TCP port the camera reports its events to; 0 switches them off.
+    event_port: int = 49198
+    # Address the camera reports to, when it is not this machine's own
+    # (Docker with port mapping: the host's address).
+    event_host: str = ""
 
     @classmethod
     def load(cls, path: pathlib.Path | None = None) -> "Config":
@@ -95,6 +106,7 @@ class Config:
             return value
 
         camera, stream, web = section("camera"), section("stream"), section("web")
+        media = section("media")
 
         def text(env: str, table: dict, key: str, default: str) -> str:
             value = os.environ.get(env, table.get(key, default))
@@ -102,14 +114,16 @@ class Config:
                 raise SystemExit(f"{env} / {key} must be text, got {value!r}")
             return value
 
-        def port(env: str, value: object) -> int:
+        def port(env: str, value: object, allow_zero: bool = False) -> int:
             raw = os.environ.get(env, value)
             try:
-                number = int(raw) if not isinstance(raw, bool) else 0
+                number = int(raw) if not isinstance(raw, bool) else -1
             except (TypeError, ValueError):
-                number = 0
-            if not 1 <= number <= 65535:
-                raise SystemExit(f"{env} must be a port number from 1 to 65535, got {raw!r}")
+                number = -1
+            if not (0 if allow_zero else 1) <= number <= 65535:
+                lowest = "0 (off) or 1" if allow_zero else "1"
+                raise SystemExit(
+                    f"{env} must be a port number from {lowest} to 65535, got {raw!r}")
             return number
 
         if "LUMIX_ALLOWED_HOSTS" in os.environ:
@@ -132,6 +146,10 @@ class Config:
             web_host=text("LUMIX_WEB_HOST", web, "host", "127.0.0.1"),
             web_port=port("LUMIX_WEB_PORT", web.get("port", 8080)),
             allowed_hosts=allowed_hosts,
+            download_dir=text("LUMIX_DOWNLOAD_DIR", media, "download_dir", "").strip(),
+            event_port=port("LUMIX_EVENT_PORT", section("events").get("port", 49198),
+                            allow_zero=True),
+            event_host=text("LUMIX_EVENT_HOST", section("events"), "host", "").strip(),
         )
         if not cfg.camera_ip:
             raise SystemExit(
@@ -200,11 +218,11 @@ def aperture_from_header(header: bytes, anchor: bytes) -> str:
     return av_to_fnumber(int.from_bytes(header[pos + 8:pos + 10], "big"))
 
 
-def iso_values_from_menu(allmenu: str) -> list[str]:
-    """Extract the allowed ISO values from the camera's menu definition.
+def values_from_menu(allmenu: str, name: str) -> list[str]:
+    """Extract the allowed values of a setting from the camera's menu definition.
 
     The camera supplies the list itself, so the interface has nothing to guess
-    and other models are covered too. Duplicates occur: the same sensitivity
+    and other models are covered too. Duplicates occur: the same value
     appears in several menu contexts.
     """
     try:
@@ -213,11 +231,43 @@ def iso_values_from_menu(allmenu: str) -> list[str]:
         return []
     seen: dict[str, None] = {}
     for item in root.iter("item"):
-        if item.get("cmd_type") == "iso" and item.get("cmd_mode") == "setsetting":
+        if item.get("cmd_type") == name and item.get("cmd_mode") == "setsetting":
             value = item.get("cmd_value")
-            if value:
+            if value and value != "__value__":
                 seen.setdefault(value, None)
     return list(seen)
+
+
+def focus_from_reply(reply: str) -> dict | None:
+    """Lens position from the reply to a focus step.
+
+    `ok,<position>,<maximum>,<?>,<?>,<?>,<mm>/<position>,...`: the pairs at
+    the end are the lens's distance scale. The distance is interpolated from
+    it and is an estimate, like the scale on a lens barrel.
+    """
+    parts = [p.strip() for p in reply.split(",")]
+    try:
+        position, maximum = int(parts[1]), int(parts[2])
+    except (IndexError, ValueError):
+        return None
+    scale: list[tuple[int, int]] = []       # (position, millimetres)
+    for part in parts[3:]:
+        if "/" in part:
+            try:
+                mm, pos = (int(v) for v in part.split("/", 1))
+            except ValueError:
+                continue
+            if mm > 0 and pos > 0:
+                scale.append((pos, mm))
+    scale.sort()
+    distance = None
+    for (p0, d0), (p1, d1) in zip(scale, scale[1:]):
+        if p0 <= position <= p1:
+            # Distances halve from mark to mark, so interpolate in the log.
+            share = (position - p0) / (p1 - p0)
+            distance = round(d0 * (d1 / d0) ** share)
+            break
+    return {"position": position, "max": maximum, "distance_mm": distance}
 
 
 # ---------------------------------------------------------------------- #
@@ -276,6 +326,27 @@ class Controller:
     # for recmode; if no drop comes, it goes ahead after this long in 'rec'.
     RESUME_NO_DROP = 20.0
 
+    # Why a recording ended, as the camera reports it in an event. 'done' is
+    # the answer to a stop by command and needs no words.
+    REC_END_REASONS = {
+        "err_UsrStp": "Stopped on the camera",
+        "err_SDfull": "The card is full",
+        "err_MemFull": "The memory is full",
+        "err_SpdInsuf": "The card is too slow",
+        "err_Tempa": "The camera is too hot",
+        "err_wr": "Write error on the card",
+        "err_UpLimit": "The recording limit was reached",
+        "err_CrFold": "No folder could be created on the card",
+    }
+
+    # Settings of the bar, each set and read back on the device.
+    # The shutter is set as an angle, as on the camera in video; the camera
+    # names the angles it offers, which it doesn't for shutter speeds.
+    BAR_SETTINGS = ("iso", "shtrspeed_angle", "whitebalance", "exposure")
+
+    # The media view needs playback. Gap between two playmode attempts.
+    PLAYMODE_RETRY = 8.0
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.camera = Camera(cfg.camera_ip, device_name=cfg.device_name,
@@ -323,10 +394,25 @@ class Controller:
         self._rec_dropped = False
         self._connected_at = 0.0
         self._resumes = 0
-        self._iso = ""
-        self._focusmode = ""
-        self._iso_values: list[str] = []
+        # The settings of the bar: current value and what may be chosen.
+        self._settings: dict[str, str] = {}
+        self._setting_values: dict[str, list[str]] = {}
+        self._setting_turn = 0
+        # Lens position, known only after a focus step: the camera has no
+        # call that just reads it.
+        self._focus: dict | None = None
+        # The card slot that was active when the media view was opened.
+        self._media_slot = ""
         self._lens_anchor = b""
+        # The last end of a recording that was not asked for here, for the
+        # interface: {"code", "text", "at"}; None after the next start.
+        self._rec_end: dict | None = None
+        self.events = EventSubscriber(cfg.camera_ip, cfg.event_port, self.on_event,
+                                      host=cfg.event_host)
+        # The media view is open: the camera stays in playback, no live view
+        # is requested and no recording is started.
+        self._media = False
+        self._last_playmode = 0.0
         # Last known session, so the shutdown can still send stopstream when
         # the connection counts as lost.
         self._stale_session: str | None = None
@@ -338,6 +424,32 @@ class Controller:
             target=self._run, name="lumix-controller", daemon=True
         )
         self._thread.start()
+        self.events.start()
+
+    def on_event(self, group: str, value: str) -> None:
+        """A report from the camera; called in the event listener's thread.
+
+        Events only add knowledge: why a recording ended, and that the state
+        is worth reading now instead of at the next poll. What is recording
+        and what gets resumed is still decided from the state query alone.
+        """
+        if group == "VRec":
+            if value == "start":
+                with self._lock:
+                    self._rec_end = None
+            elif value != "done":
+                with self._lock:
+                    self._rec_end = {
+                        "code": value,
+                        "text": self.REC_END_REASONS.get(
+                            value, f"The camera ended the recording ({value})"),
+                        "at": time.time(),
+                    }
+                log.warning("recording_ended_by_camera", extra={"reason": value})
+            # Read the state right away, not up to a poll interval later.
+            # Only for these: the Sync reports around a recording come in
+            # bursts, at the moment the camera is busiest.
+            self._last_poll = 0.0
 
     def stop(self) -> None:
         """Ordered shutdown. Must run on every path that ends the process.
@@ -360,6 +472,8 @@ class Controller:
         finally:
             self.stream.stop()
             self.camera.close()
+            # Last: nothing may stand between the shutdown and stopstream.
+            self.events.stop()
 
     # ------------------------------------------------------------------ #
 
@@ -462,7 +576,10 @@ class Controller:
         # every reconnect. So clean up first.
         self.camera.stop_stream()
         self._read_capabilities()
-        self._settle()
+        if not self._media:
+            # With the media view open the camera is wanted in playback,
+            # where it goes by itself after the registration.
+            self._settle()
         self._last_poll = 0.0  # forces an immediate state poll
 
     def _drop_stale_resume(self) -> None:
@@ -540,14 +657,16 @@ class Controller:
                 self._lens_anchor = lens_anchor(self.camera.get_info("lens")) or b""
             except LumixError as exc:
                 log.info("lens_unreadable", extra={"error": str(exc)})
-        if not self._iso_values:
+        if not self._setting_values.get("iso"):
             # allmenu is about 380 KB and doesn't change, so a reconnect
             # doesn't pull it over the WLAN again every time.
             try:
-                values = iso_values_from_menu(self.camera.get_info("allmenu"))
-                if values:
-                    self._iso_values = values
-                    log.info("iso_values", extra={"count": len(values)})
+                menu = self.camera.get_info("allmenu")
+                for name in self.BAR_SETTINGS:
+                    found = values_from_menu(menu, name)
+                    if found:
+                        self._setting_values[name] = found
+                log.info("iso_values", extra={"count": len(self._setting_values.get("iso", []))})
             except LumixError as exc:
                 log.info("menu_unreadable", extra={"error": str(exc)})
 
@@ -559,8 +678,9 @@ class Controller:
             self._read_state()
 
         # In playback mode the camera has no live view to send. A startstream
-        # is acknowledged but stays silent.
-        if self._cammode != "rec":
+        # is acknowledged but stays silent. With the media view open, none is
+        # wanted either.
+        if self._cammode != "rec" or self._media:
             return
 
         if self._streaming and not self.stream.running:
@@ -627,14 +747,18 @@ class Controller:
         stale = stop_seq != self._stop_seq
         self._follow_recording(state.recording and not stale, mode)
 
+        if self._media and state.recording:
+            # Started on the camera itself: the recording comes first.
+            log.info("media_closed_recording")
+            self._media = False
+        if self._media:
+            self._hold_playback(mode)
+            return
+
         if mode == "rec":
             self._recmode_tried = False
             self._recmode_error = ""
-            for name in ("iso", "focusmode"):
-                try:
-                    self._set(**{name: self.camera.get_setting(name)})
-                except LumixError as exc:
-                    log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
+            self._read_settings(state.recording)
             self._set(status="online", error="")
             return
 
@@ -674,6 +798,100 @@ class Controller:
             reason += f". Mode change refused: {self._recmode_error}"
         self._set(status="standby", error=reason)
 
+    def _read_settings(self, recording: bool) -> None:
+        """Read the bar's settings. While a recording runs only one per poll,
+        in turn: every request is one more thing the camera has to answer."""
+        names = (*self.BAR_SETTINGS, "focusmode")
+        if recording:
+            self._setting_turn = (self._setting_turn + 1) % len(names)
+            names = (names[self._setting_turn],)
+        for name in names:
+            try:
+                value = self.camera.get_setting(name)
+            except NotReachable:
+                # Not a refusal: the keeper's handling of a dropout applies,
+                # instead of one timeout after the other in here.
+                raise
+            except LumixError as exc:
+                log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
+                continue
+            with self._lock:
+                self._settings[name] = value
+
+    def _hold_playback(self, mode: str) -> None:
+        """Keep the camera in playback while the media view is open."""
+        if mode == "play":
+            self._set(status="media", error="")
+            return
+        self._set(status="media", error=f"Waiting for playback, the camera is in '{mode}'")
+        now = time.monotonic()
+        if now - self._last_playmode < self.PLAYMODE_RETRY:
+            return
+        self._last_playmode = now
+        try:
+            if self._streaming:
+                self.camera.stop_stream()
+                self._streaming = False
+            self.camera.set_play_mode()
+            self._last_poll = 0.0   # check right away
+            log.info("playmode_sent", extra={"cammode": mode})
+        except LumixError as exc:
+            log.info("playmode_refused", extra={"error": str(exc)})
+            self._set(error=f"The camera refused the change to playback: {exc.reply or exc}")
+
+    # ------------------------------------------------------------------ #
+    # Media view
+    # ------------------------------------------------------------------ #
+
+    def media_open(self) -> None:
+        """Open the media view. Refused while a recording runs or is wanted."""
+        if not self.camera.connected:
+            raise LumixError("No connection to the camera")
+        if self._recording() or self._rec_wanted:
+            raise LumixError("A recording is running: stop it before opening the cards")
+        self._media = True
+        with self._lock:
+            self._media_slot = self._state.raw.get("current_sd", "")
+        self._last_playmode = 0.0
+        self._last_poll = 0.0
+        log.info("media_opened")
+
+    def media_close(self) -> None:
+        """Close the media view; the camera goes back to record mode."""
+        if not self._media:
+            return
+        if self._media_slot and self.camera.connected:
+            # Listing the other card changed the active slot; put it back
+            # before the camera returns to record mode.
+            try:
+                if self.camera.get_setting("current_sd") != self._media_slot:
+                    self.camera.set_setting("current_sd", self._media_slot)
+            except LumixError as exc:
+                log.info("slot_not_restored", extra={"error": str(exc)})
+        self._media = False
+        self._recmode_tried = False
+        self._recmode_error = ""
+        self._last_poll = 0.0
+        log.info("media_closed")
+
+    @property
+    def media_wanted(self) -> bool:
+        return self._media
+
+    @property
+    def media_ready(self) -> bool:
+        """Can the cards be listed and files be fetched right now?"""
+        with self._lock:
+            playback = self._cammode == "play"
+        return (self._media and playback and self.camera.connected
+                and self._unreachable_since is None)
+
+    def media_headers(self) -> dict[str, str]:
+        return self.camera.session_headers()
+
+    def content_count(self) -> int:
+        return self.camera.content_count()
+
     def _follow_recording(self, recording: bool, mode: str) -> None:
         """Start a recording again that a re-registration has ended."""
         now = time.monotonic()
@@ -684,6 +902,11 @@ class Controller:
 
         first_poll, self._first_poll = self._first_poll, False
         if recording:
+            # A new recording: the note about the last end is over. A note
+            # that just came in belongs to a poll that was still under way.
+            with self._lock:
+                if self._rec_end and time.time() - self._rec_end["at"] > 3.0:
+                    self._rec_end = None
             self._rec_wanted = True
             self._rec_off_since = None
             if first_poll:
@@ -704,6 +927,11 @@ class Controller:
             self._resume_armed = False
             self._rec_off_since = None
             log.info("recording_ended")
+            with self._lock:
+                if self._rec_end is None:
+                    # No event said why (the event port may be blocked).
+                    self._rec_end = {"code": "", "at": time.time(),
+                                     "text": "The recording ended, not through this app"}
             return
 
         # recmode is sent by _read_state. 'rec' has to hold for a moment after
@@ -724,8 +952,22 @@ class Controller:
         log.warning("recording_resumed", extra={
             "attempt": self._resumes, "after_s": round(since_connect, 1)})
 
+    def _not_in_cards(self) -> None:
+        """Commands for record mode are refused while the cards are open: what
+        they do to a camera in playback, in the middle of a download, is
+        unmeasured."""
+        if self._media:
+            raise LumixError("The cards are open: close them first")
+
+    def autofocus(self) -> None:
+        self._not_in_cards()
+        self.camera.autofocus()
+
     def rec_start(self) -> None:
+        self._not_in_cards()
         self.camera.rec_start()
+        with self._lock:
+            self._rec_end = None
         self._rec_wanted = True
         self._resume_armed = False
 
@@ -798,8 +1040,7 @@ class Controller:
 
     def _set(self, *, state: CameraState | None = None,
              status: str | None = None, error: str | None = None,
-             cammode: str | None = None, iso: str | None = None,
-             focusmode: str | None = None) -> None:
+             cammode: str | None = None) -> None:
         with self._lock:
             if state is not None:
                 self._state = state
@@ -809,51 +1050,124 @@ class Controller:
                 self._error = error
             if cammode is not None:
                 self._cammode = cammode
-            if iso is not None:
-                self._iso = iso
-            if focusmode is not None:
-                self._focusmode = focusmode
 
     # ------------------------------------------------------------------ #
 
-    def set_iso(self, value: str) -> str:
-        """Set the sensitivity and report back what the camera actually took.
+    def set_setting(self, name: str, value: str) -> str:
+        """Set one of the bar's settings; returns what the camera adopted.
 
-        An acknowledged ok doesn't mean the value applies: measured was ISO
-        400, which the camera adopted as 800. So the value is read back and
+        An acknowledged ok doesn't mean the value applies: the camera snaps to
+        what it allows in the current mode (measured: ISO 400 became 800,
+        exposure compensation -5 became -3). So the value is read back and
         the read value is returned.
         """
-        if self._iso_values and value not in self._iso_values:
-            raise LumixError(f"ISO {value!r} is not available on this camera")
-        self.camera.set_setting("iso", value)
+        self._not_in_cards()
+        if name not in self.BAR_SETTINGS:
+            raise LumixError(f"{name!r} can't be set here")
+        allowed = self._setting_values.get(name)
+        if allowed and value not in allowed:
+            raise LumixError(f"{value!r} is not available for {name} on this camera")
+        self.camera.set_setting(name, value)
         time.sleep(0.4)
-        actual = self.camera.get_setting("iso")
-        self._set(iso=actual)
+        actual = self.camera.get_setting(name)
+        with self._lock:
+            self._settings[name] = actual
         return actual
+
+    def _require_live(self) -> None:
+        with self._lock:
+            live = self._status == "online"
+        if not live or self._media:
+            raise LumixError("Only possible with the live view running")
+
+    def touch_focus(self, x: int, y: int) -> None:
+        """Touch focus at a point of the picture, 0 to 1000 each way."""
+        self._require_live()
+        self.camera.touch_focus(x, y)
+
+    def focus_step(self, nearer: bool) -> dict:
+        """Move the focus a step; returns the lens position."""
+        self._require_live()
+        focus = focus_from_reply(self.camera.focus_step(nearer))
+        if focus is None:
+            raise LumixError("The camera did not report a lens position")
+        with self._lock:
+            self._focus = focus
+        return focus
+
+    # ------------------------------------------------------------------ #
+    # Card slots, for the media view
+    # ------------------------------------------------------------------ #
+
+    def card_slots(self) -> list[str]:
+        """The slots that hold a card; empty on a camera with one slot."""
+        with self._lock:
+            raw = self._state.raw
+        if "current_sd" not in raw:
+            return []
+        slots = [slot for slot, field in (("sd1", "sd_memory"), ("sd2", "sd2_memory"))
+                 if raw.get(field) == "set"]
+        # The active one first: no change of slot for its listing.
+        return sorted(slots, key=lambda slot: slot != raw.get("current_sd"))
+
+    def select_slot(self, slot: str) -> None:
+        """Make a slot the one that listing and downloads refer to."""
+        self.camera.set_setting("current_sd", slot)
 
 
     # ------------------------------------------------------------------ #
+
+    def _rec_seconds(self, state: CameraState) -> int | None:
+        if not state.recording:
+            return None
+        try:
+            counted = int(state.raw.get("progress_time", ""))
+        except ValueError:
+            return None
+        age = time.monotonic() - self._last_seen if self._last_seen else 0.0
+        # While the camera is out of reach the recording goes on; the counter
+        # is carried on rather than frozen at the last answer.
+        return counted + max(int(age), 0)
+
+    def snapshot_settings(self) -> dict:
+        with self._lock:
+            return {name: {"value": self._settings.get(name, ""),
+                           "values": self._setting_values.get(name, [])}
+                    for name in self.BAR_SETTINGS}
 
     def snapshot(self) -> dict:
         """Current view of the world, safe to serialise at any time."""
         with self._lock:
             state, status, error = self._state, self._status, self._error
-            cammode, iso, iso_values = self._cammode, self._iso, self._iso_values
-            focusmode = self._focusmode
+            cammode = self._cammode
+            focusmode = self._settings.get("focusmode", "")
             anchor = self._lens_anchor
+            focus = self._focus
+        settings = self.snapshot_settings()
         stats = self.stream.stats
         return {
             "version": __version__,
             "status": status,
             "error": error,
             "cammode": cammode,
-            "iso": iso,
-            "iso_values": iso_values,
+            # ISO is in "settings" too; these two stay for scripts that read them.
+            "iso": settings["iso"]["value"],
+            "iso_values": settings["iso"]["values"],
             "focusmode": focusmode,
+            "settings": settings,
+            # Known only after a focus step from here.
+            "focus": focus,
+            "temperature": state.raw.get("temperature", ""),
+            "card": state.raw.get("current_sd", ""),
             # The aperture is in no query, only in the datagram header. It
             # can therefore be read, but not set.
             "aperture": aperture_from_header(self.stream.latest_header or b"", anchor),
             "recording": state.recording,
+            # Seconds of the running recording, from the camera's own counter
+            # plus the time since it was read.
+            "rec_seconds": self._rec_seconds(state),
+            "rec_end": self._rec_end,
+            "events": self.events.subscribed,
             "battery": state.battery,
             "remaining_shots": state.remaining_shots,
             "video_remaining": state.video_remaining,
@@ -869,6 +1183,7 @@ class Controller:
             "stream_port": self.cfg.stream_port,
             # Empty while the UDP receiver is fine.
             "stream_error": self.stream.error,
+            "media": self._media,
         }
 
 
@@ -882,12 +1197,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = cfg
     controller = Controller(cfg)
     app.state.controller = controller
+    media = MediaManager(controller, cfg.camera_ip,
+                         pathlib.Path(cfg.download_dir) if cfg.download_dir else None)
+    app.state.media = media
     controller.start()
     try:
         yield
     finally:
         # Runs on Ctrl+C and on SIGTERM from the container too.
         log.info("shutting_down")
+        # The download is told to stop first, so the camera is idle when the
+        # session goes; it gets little time, stopstream must not wait for it.
+        await run_in_threadpool(media.stop)
         await run_in_threadpool(controller.stop)
 
 
@@ -1012,13 +1333,27 @@ def _controller(request: Request) -> Controller:
     return controller
 
 
-async def _command(fn: Callable[[], None]) -> dict:
+async def _call(fn: Callable, *args):
     """Run a blocking camera call off the event loop and map its errors."""
     try:
-        await run_in_threadpool(fn)
+        return await run_in_threadpool(fn, *args)
     except LumixError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _command(fn: Callable[[], None]) -> dict:
+    await _call(fn)
     return {"ok": True}
+
+
+async def _json_object(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body is not JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body is not an object")
+    return payload
 
 
 @app.get("/")
@@ -1045,7 +1380,7 @@ async def health(request: Request) -> JSONResponse:
 
 @app.post("/api/af", **COMMAND)
 async def autofocus(request: Request) -> dict:
-    return await _command(_controller(request).camera.autofocus)
+    return await _command(_controller(request).autofocus)
 
 
 @app.post("/api/rec/start", **COMMAND)
@@ -1061,20 +1396,113 @@ async def rec_stop(request: Request) -> dict:
 @app.post("/api/iso", **COMMAND)
 async def set_iso(request: Request) -> dict:
     """Set the sensitivity. Reports the value the camera really adopted."""
-    controller = _controller(request)
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Body is not JSON") from None
-    value = str(payload.get("value", "")).strip() if isinstance(payload, dict) else ""
+    payload = await _json_object(request)
+    value = str(payload.get("value", "")).strip()
     if not value:
         raise HTTPException(status_code=400, detail="No ISO value given")
-    try:
-        actual = await run_in_threadpool(controller.set_iso, value)
-    except LumixError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    actual = await _call(_controller(request).set_setting, "iso", value)
     return {"ok": True, "iso": actual}
 
+
+@app.post("/api/setting", **COMMAND)
+async def set_setting(request: Request) -> dict:
+    """Set ISO, shutter angle, white balance or exposure compensation.
+
+    Reports the value the camera really adopted.
+    """
+    controller = _controller(request)
+    payload = await _json_object(request)
+    name, value = payload.get("name"), payload.get("value")
+    if not isinstance(name, str) or not isinstance(value, str) or not name or not value:
+        raise HTTPException(status_code=400, detail="Give name and value as text")
+    actual = await _call(controller.set_setting, name, value)
+    return {"ok": True, "name": name, "value": actual}
+
+
+@app.post("/api/touch", **COMMAND)
+async def touch_focus(request: Request) -> dict:
+    """Touch focus at `{"x": 0-1000, "y": 0-1000}` of the picture."""
+    controller = _controller(request)
+    payload = await _json_object(request)
+    x, y = payload.get("x"), payload.get("y")
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 1000
+               for v in (x, y)):
+        raise HTTPException(status_code=400, detail="x and y must be whole numbers from 0 to 1000")
+    return await _command(lambda: controller.touch_focus(x, y))
+
+
+@app.post("/api/focus", **COMMAND)
+async def focus_step(request: Request) -> dict:
+    """Move the focus a step: `{"direction": "near"}` or `"far"`."""
+    controller = _controller(request)
+    payload = await _json_object(request)
+    direction = payload.get("direction")
+    if direction not in ("near", "far"):
+        raise HTTPException(status_code=400, detail='direction must be "near" or "far"')
+    focus = await _call(controller.focus_step, direction == "near")
+    return {"ok": True, "focus": focus}
+
+
+# ---- Media view: the cards' contents and the downloads ------------------- #
+
+def _media(request: Request) -> MediaManager:
+    media: MediaManager | None = getattr(request.app.state, "media", None)
+    if media is None:
+        raise HTTPException(status_code=503, detail="Control not ready")
+    return media
+
+
+@app.get("/api/media")
+async def media_state(request: Request, rev: int | None = None) -> dict:
+    """The cards view's state. With `?rev=` set to the revision of the last
+    reply, the list of files is left out while it is unchanged."""
+    return await run_in_threadpool(_media(request).snapshot, rev)
+
+
+@app.post("/api/media/open", **COMMAND)
+async def media_open(request: Request) -> dict:
+    return await _command(_controller(request).media_open)
+
+
+@app.post("/api/media/close", **COMMAND)
+async def media_close(request: Request) -> dict:
+    """Close the view. A running download is stopped and continues next time."""
+    controller, media = _controller(request), _media(request)
+
+    # The worker first: the slot is put back only once nothing is being
+    # fetched from the other card any more.
+    return await _command(lambda: media.close(controller.media_close))
+
+
+@app.post("/api/media/refresh", **COMMAND)
+async def media_refresh(request: Request) -> dict:
+    return await _command(_media(request).refresh)
+
+
+@app.post("/api/media/download", **COMMAND)
+async def media_download(request: Request) -> dict:
+    """Queue files: `{"ids": [...]}` for some, `{"all": true}` for everything."""
+    media = _media(request)
+    payload = await _json_object(request)
+    ids = payload.get("ids")
+    if payload.get("all") is True:
+        ids = None
+    elif not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(status_code=400, detail="Give ids as a list, or all: true")
+    return {"ok": True, "queued": await _call(media.enqueue, ids)}
+
+
+@app.post("/api/media/cancel", **COMMAND)
+async def media_cancel(request: Request) -> dict:
+    return await _command(_media(request).cancel)
+
+
+@app.get("/api/media/thumb/{item_id}")
+async def media_thumb(request: Request, item_id: str) -> Response:
+    data = _media(request).thumbnail(item_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="No thumbnail")
+    return Response(content=data, media_type="image/jpeg")
 
 
 @app.get("/stream.mjpg")
@@ -1150,6 +1578,7 @@ def main() -> int:
         "version": __version__, "camera": cfg.camera_ip,
         "device_name": cfg.device_name, "stream_port": cfg.stream_port,
         "web": f"http://{cfg.web_host}:{cfg.web_port}", "log_level": level,
+        "download_dir": cfg.download_dir or "-", "event_port": cfg.event_port,
     })
     # The MJPEG stream never ends by itself. Without a deadline, uvicorn would
     # wait for every watching browser on shutdown, and a SIGKILL after that

@@ -323,6 +323,61 @@ class Camera:
         self._require_session()
         self._get_xml(mode="camcmd", value="recmode")
 
+    def set_play_mode(self) -> None:
+        """Switch the camera to playback, which listing the cards needs."""
+        self._require_session()
+        self._get_xml(mode="camcmd", value="playmode")
+
+    def content_count(self) -> int:
+        """Number of files on the cards; -1 while the camera builds its index."""
+        self._require_session()
+        root = self._get_xml(mode="get_content_info")
+        try:
+            return int(root.findtext("total_content_number", default="-1"))
+        except ValueError:
+            return -1
+
+    def session_headers(self) -> dict[str, str]:
+        """The header that marks a request as part of the remote session."""
+        return self._headers()
+
+    def touch_focus(self, x: int, y: int) -> None:
+        """Touch focus at a point; both coordinates run from 0 to 1000.
+
+        Sent as a tap, down and up again: a second `on` without the `off` in
+        between was refused with err_reject on the device. So the `off` goes
+        out whatever became of the `on`, or one lost release would block
+        every later touch.
+        """
+        self._require_session()
+        try:
+            self._get_xml(mode="camctrl", type="touch", value=f"{x}/{y}", value2="on")
+        finally:
+            try:
+                self._get_xml(mode="camctrl", type="touch", value="0/0", value2="off")
+            except LumixError as exc:
+                log.debug("touch_release_failed", extra={"error": str(exc)})
+
+    def focus_step(self, nearer: bool) -> str:
+        """Move the focus one step and return the reply, which carries the
+        lens position: `ok,<position>,<maximum>,...`.
+
+        `wide` is nearer and `tele` farther: on the device the position rose
+        with `wide-normal`, and the scale in the reply puts short distances
+        at high positions.
+        """
+        self._require_session()
+        value = "wide-normal" if nearer else "tele-normal"
+        text = self._get_raw(mode="camctrl", type="focus", value=value)
+        if not text.startswith("ok"):
+            try:
+                reply = ET.fromstring(text).findtext("result", default="")
+            except ET.ParseError:
+                reply = ""
+            raise LumixError(f"camera refused the focus step: {reply or text[:40]!r}",
+                             reply=reply)
+        return text
+
     def autofocus(self) -> None:
         self._require_session()
         self._get_xml(mode="camcmd", value="oneshot_af")

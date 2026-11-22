@@ -24,7 +24,9 @@ ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     PYTHONPATH=/app \
     LUMIX_WEB_HOST=0.0.0.0 \
     LUMIX_WEB_PORT=8080 \
-    LUMIX_STREAM_PORT=49199
+    LUMIX_STREAM_PORT=49199 \
+    LUMIX_EVENT_PORT=49198 \
+    LUMIX_DOWNLOAD_DIR=/downloads
 
 # /lsiopy is linuxserver.io's place for a Python venv and already on PATH.
 # pip is only needed to build the image and is removed afterwards: the
@@ -51,10 +53,14 @@ RUN chmod -R a+rX /app \
  && printf 'PanaControl version: %s\n' \
       "$(python3 -c 'import lumixremote; print(lumixremote.__version__)')" > /build_version
 
+# Files fetched from the camera's cards. Without a folder mapped here the
+# app refuses to download, so nothing lands in Docker's own storage.
+VOLUME /downloads
+
 EXPOSE 8080/tcp
 EXPOSE 49199/udp
-
-# No VOLUME: the app writes no files.
+# The camera reports the start and end of a recording here.
+EXPOSE 49198/tcp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python3 -c "import urllib.request,os,sys; \
