@@ -307,8 +307,8 @@ camera's events and state through three short recordings (by command,
 stopped on the camera, started on the camera), reads every setting the menu
 definition names, tries touch focus, AF/AE lock, focus pull and zoom by
 command, changes exposure compensation, white balance and shutter speed and
-puts them back, takes a photo by command and looks at both card slots. It
-leaves three short clips and possibly one photo on the card. Stop
+puts them back, and looks at both card slots. It leaves three short clips
+on the card. Photos are left out: the mode dial can't be turned by command. Stop
 PanaControl first. The replies land in `out/appprobe/`.
 
 When the camera starts recording for the second time, stop it on the

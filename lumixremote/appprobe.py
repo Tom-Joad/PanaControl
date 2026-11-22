@@ -11,11 +11,11 @@ somebody standing at it:
   * touch focus, AF/AE lock, focus pull and zoom by command
   * exposure compensation, white balance and shutter speed set and restored
   * live view datagrams next to known settings, for mapping the header
-  * a photo by command
   * the second card slot in playback
 
-It makes three short recordings and possibly one photo, and nothing else on
-the cards is touched. Settings it changes are put back, also when the run is
+It makes three short recordings, and nothing else on the cards is touched.
+Photos are left out: the camera is tested in its video mode, and the mode
+dial can't be turned by command. Settings it changes are put back, also when the run is
 aborted. Only one remote session exists per camera: stop PanaControl first.
 
 Usage:
@@ -314,17 +314,8 @@ class AppProbe(Probe):
         print("\n[11] Recording 3: started on the camera, stopped by command")
         self.recording("started_on_camera", False, True, wait)
 
-    def step_photo(self) -> None:
-        print("\n[12] A photo by command")
-        if self.poll_state().get("cammode") != "rec":
-            self.step_back_to_rec()
-        self.call("capture", mode="camcmd", value="capture")
-        time.sleep(1.5)
-        self.call("capture_cancel", mode="camcmd", value="capture_cancel")
-        self.watch(5)
-
     def step_cards(self) -> None:
-        print("\n[13] Both card slots in playback")
+        print("\n[12] Both card slots in playback")
         self._receiving = False
         self.call("stopstream", mode="stopstream")
         self.call("playmode", mode="camcmd", value="playmode")
@@ -381,7 +372,6 @@ class AppProbe(Probe):
             self.step_controls()
             self.step_settings()
             self.step_recordings(wait)
-            self.step_photo()
             self.step_cards()
             self.step_back_to_rec()
             offsets = dict(self._offsets)
