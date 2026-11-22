@@ -41,8 +41,8 @@ and updates the document; assumptions don't replace measurements.
 * Python 3.11 as the minimum (`tomllib` from the standard library).
 * Camera errors are reported as `LumixError`, not as a bare HTTP exception.
   The caller shouldn't have to know that HTTP is involved.
-* Logging through the `logging` module, never `print` outside `probe.py` and
-  `mediaprobe.py`.
+* Logging through the `logging` module, never `print` outside `probe.py`,
+  `mediaprobe.py` and `appprobe.py`.
 * The interface follows the Tom Joad Media design (`static/css/tokens.css`,
   `base.css`, fonts served by the app itself, never from a CDN).
   Deliberate exception (owner, 2026-11-14): recording is shown in `red`,
