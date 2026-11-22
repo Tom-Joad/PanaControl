@@ -5,7 +5,7 @@ httpx==0.28.1
 fastapi==0.162.5
 uvicorn==0.54.0
 
-annotated-doc==0.0.6
+annotated-doc==0.0.7
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
