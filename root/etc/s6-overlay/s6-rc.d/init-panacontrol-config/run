@@ -30,6 +30,10 @@ if [[ -z ${LSIO_NON_ROOT_USER} ]]; then
     DOWNLOADS=${LUMIX_DOWNLOAD_DIR:-/downloads}
     if [[ -d ${DOWNLOADS} ]] && [[ $(stat -c %u "${DOWNLOADS}") == 0 ]]; then
         lsiown abc:abc "${DOWNLOADS}"
-        chmod "$(printf '%o' $(( 0777 & ~$(umask) )))" "${DOWNLOADS}"
+        # UMASK from the environment: the base image applies it to services
+        # only, not to this step.
+        MASK=${UMASK:-022}
+        [[ ${MASK} =~ ^[0-7]{1,4}$ ]] || MASK=022
+        chmod "$(printf '%o' $(( 0777 & ~0${MASK} )))" "${DOWNLOADS}"
     fi
 fi
