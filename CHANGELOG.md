@@ -5,6 +5,17 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Added
+- **A run started by a script no longer fetches a clip twice.** The app
+  keeps a list of what it has saved, `panacontrol-saved.json` in the
+  download folder. `POST /api/media/sync` leaves out what is on it, also
+  when the file has been moved out of the folder since, and reports it as
+  `saved_before`. Files that are in the folder at the first listing go on
+  the list too. The interface can still save such a file again; removing
+  its entry from the list makes a script run fetch it again.
+
 ## [3.5.0] - 2026-11-22
 
 ### Added

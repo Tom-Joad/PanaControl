@@ -5,6 +5,7 @@ docs/protocol.md."""
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import socket
@@ -1880,6 +1881,75 @@ def test_a_run_saves_what_is_missing_and_gives_the_camera_back(card, tmp_path):
     _wait(lambda: manager.sync_state()["status"] == "done")
     assert manager.sync_state()["files"][0]["result"] == "present"
     assert len(list(tmp_path.iterdir())) == fake_requests_before
+
+
+def test_a_run_leaves_out_what_was_saved_before_and_moved_away(card, tmp_path):
+    session = SyncSession()
+    fake = FakeCard()
+    manager = card(fake, session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    saved = json.loads((tmp_path / "panacontrol-saved.json").read_text())
+    assert saved["format"] == "panacontrol-saved/1"
+    assert [(f["name"], f["size"], f["card"]) for f in saved["files"]] == [("P1000001.MOV", len(CLIP), "")]
+    assert "duration" in saved["files"][0]
+    assert saved["files"][0]["saved"]
+
+    # The clip is taken out of the folder, as a script that works on it does.
+    (tmp_path / "P1000001.MOV").unlink()
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    assert manager.sync_state()["files"][0]["result"] == "saved_before"
+    assert not (tmp_path / "P1000001.MOV").exists()
+
+    # Without its entry the file is fetched again.
+    (tmp_path / "panacontrol-saved.json").write_text('{"format": "panacontrol-saved/1", "files": []}')
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    assert manager.sync_state()["files"][0]["result"] == "saved"
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_file_found_in_the_folder_goes_on_the_list_and_the_interface_still_fetches(card, tmp_path):
+    (tmp_path / "P1000001.MOV").write_bytes(CLIP)       # saved by an older version
+    manager = card(FakeCard())
+    _wait(lambda: manager.snapshot()["listed"])
+    saved = json.loads((tmp_path / "panacontrol-saved.json").read_text())
+    assert [f["name"] for f in saved["files"]] == ["P1000001.MOV"]
+
+    # Moved away: the list does not keep the interface from saving it again.
+    (tmp_path / "P1000001.MOV").unlink()
+    manager.refresh()
+    _wait(lambda: _item(manager)["state"] == "")
+    assert manager.enqueue(None) == 1
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+    assert len(json.loads((tmp_path / "panacontrol-saved.json").read_text())["files"]) == 1
+
+
+def test_a_broken_list_of_saved_files_refuses_the_run_and_is_not_written_over(card, tmp_path):
+    (tmp_path / "panacontrol-saved.json").write_text("{ not json")
+    session = SyncSession()
+    manager = card(FakeCard(), session)
+    with pytest.raises(LumixError, match="panacontrol-saved.json .* cannot be read"):
+        manager.start_sync(session.enter, session.leave)
+    assert session.calls == []
+    # The interface still saves; the list stays as it is for the owner to repair.
+    session.enter()
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "panacontrol-saved.json").read_text() == "{ not json"
+
+
+def test_a_clip_of_the_same_name_and_size_but_another_length_is_fetched(card, tmp_path):
+    (tmp_path / "panacontrol-saved.json").write_text(json.dumps({"format": "panacontrol-saved/1", "files": [
+        {"name": "P1000001.MOV", "size": len(CLIP), "duration": "9:59:59", "card": "", "saved": "x"}]}))
+    session = SyncSession()
+    manager = card(FakeCard(), session)
+    manager.start_sync(session.enter, session.leave)
+    _wait(lambda: manager.sync_state()["status"] == "done")
+    assert manager.sync_state()["files"][0]["result"] == "saved"
 
 
 def test_a_run_is_refused_while_one_is_under_way_or_the_camera_records(card):

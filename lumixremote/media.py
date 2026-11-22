@@ -16,6 +16,8 @@ gone, the container restarted) continues from the part file.
 
 from __future__ import annotations
 
+import datetime
+import json
 import logging
 import os
 import pathlib
@@ -43,6 +45,9 @@ THUMBNAIL_KINDS = ("CAM_TN", "CAM_LRGTN")
 # An unmapped VOLUME is an anonymous Docker volume: it lives in Docker's own
 # storage and would fill it with video.
 ANONYMOUS_VOLUME = re.compile(r"/volumes/[0-9a-f]{64}/_data$")
+# The list of what was saved before, kept in the download folder itself.
+SAVED_LIST = "panacontrol-saved.json"
+SAVED_FORMAT = "panacontrol-saved/1"
 
 
 # ------------------------------------------------------------- parsing ---
@@ -179,6 +184,77 @@ def folder_problem(path: pathlib.Path | None,
     return ""
 
 
+class SavedList:
+    """Which files were saved before, by name, size and length.
+
+    The cards keep their files and the download folder is emptied by whoever
+    works with the clips, so the folder alone cannot tell a run for a script
+    what it has fetched already. The list is a small JSON file in the
+    download folder: readable, and editable by hand (remove an entry and the
+    file is fetched again). It is read whenever it is needed, never cached.
+
+    A list that is there but cannot be read is never written over: nothing
+    is added to it, and no run starts for a script until it is repaired or
+    deleted. Taking it for empty would fetch every clip on the cards again.
+    """
+
+    def __init__(self, folder: pathlib.Path):
+        self.path = folder / SAVED_LIST
+
+    def _load(self) -> list[dict]:
+        """The entries; ValueError when the file is there but unreadable."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return [e for e in data["files"]
+                    if isinstance(e.get("name"), str) and isinstance(e.get("size"), int)]
+        except FileNotFoundError:
+            return []
+        except (OSError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(str(exc) or type(exc).__name__) from exc
+
+    def problem(self) -> str:
+        """Why the list cannot be used; empty when it is fine or not there."""
+        try:
+            self._load()
+        except ValueError as exc:
+            return (f"{SAVED_LIST} in the download folder cannot be read ({exc}): "
+                    "correct it or delete it")
+        return ""
+
+    @staticmethod
+    def _key(entry: dict) -> tuple[str, int, str]:
+        return entry["name"], entry["size"], str(entry.get("duration", ""))
+
+    def known(self) -> set[tuple[str, int, str]]:
+        """(name, size, length) of every listed file; none while unreadable."""
+        try:
+            return {self._key(e) for e in self._load()}
+        except ValueError as exc:
+            log.warning("saved_list_unreadable", extra={"error": str(exc)})
+            return set()
+
+    def add(self, files: list[tuple[str, int, str, str]]) -> None:
+        """Note each (name, size, length, card) whose first three are not
+        listed yet."""
+        try:
+            entries = self._load()
+            known = {self._key(e) for e in entries}
+            new = [f for f in dict.fromkeys(files) if f[1] > 0 and f[:3] not in known]
+            if not new:
+                return
+            now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+            entries += [{"name": name, "size": size, "duration": duration, "card": card, "saved": now}
+                        for name, size, duration, card in new]
+            temp = self.path.with_name(self.path.name + ".tmp")
+            temp.write_text(json.dumps({"format": SAVED_FORMAT, "files": entries}, indent=1) + "\n",
+                            encoding="utf-8")
+            os.replace(temp, self.path)
+        except (OSError, ValueError) as exc:
+            # The download itself worked. A run for a script would fetch the
+            # file again, or is refused while the list is unreadable.
+            log.warning("saved_list_not_written", extra={"error": str(exc)})
+
+
 # ---------------------------------------------------------------- files ---
 
 @dataclass
@@ -209,6 +285,8 @@ class MediaItem:
     error: str = ""
     # The revision in which this item last changed for the interface.
     rev: int = 0
+    # Not in the folder, but on the list of what was saved before.
+    saved_before: bool = False
 
     @property
     def size(self) -> int:
@@ -280,6 +358,7 @@ class SyncRun:
     files: list[dict] = field(default_factory=list)     # filled when it ends
     leave: Callable[[], None] | None = None
     present: set[str] = field(default_factory=set)      # in the folder before
+    earlier: set[str] = field(default_factory=set)      # saved before, moved away
     unready_since: float | None = None
     list_failures: int = 0
 
@@ -390,6 +469,7 @@ class MediaManager:
         """Start a run. `enter` puts the camera into the media mode (and
         refuses while it records), `leave` takes it out again at the end."""
         problem = folder_problem(self.folder)
+        problem = problem or SavedList(self.folder).problem()
         if problem:
             raise LumixError(problem)
         with self._cond:
@@ -423,8 +503,10 @@ class MediaManager:
             return state
 
     def _result_locked(self, item: MediaItem, final: bool) -> str:
-        """What became of a file in the run. A finished run knows three
+        """What became of a file in the run. A finished run knows four
         outcomes besides `saved`; a running one also says what is waiting."""
+        if item.state == "" and item.id in self._sync.earlier:
+            return "saved_before"
         if item.state == "done":
             return "present" if item.id in self._sync.present else "saved"
         if item.state == "failed":
@@ -456,7 +538,8 @@ class MediaManager:
             failed = [i for i in self._items.values() if i.state == "failed"]
             # A failure that is not about space empties the queue; what was
             # left then counts as not saved either.
-            if failed or any(i.state != "done" for i in self._items.values()):
+            if failed or any(i.state != "done" and i.id not in run.earlier
+                             for i in self._items.values()):
                 reason = failed[0].error if failed else "not every file was saved"
                 return lambda: self._finish_sync("failed", reason)
             return lambda: self._finish_sync("done")
@@ -470,7 +553,11 @@ class MediaManager:
         run.unready_since = None
         if run.step == "listing" and self._listed and not self._relist:
             run.present = {i.id for i in self._items.values() if i.state == "done"}
-            self._enqueue_locked(list(self._items))
+            # What was saved before and moved out of the folder is not
+            # fetched again; in the interface it still can be.
+            run.earlier = {i.id for i in self._items.values()
+                           if i.saved_before and i.state == ""}
+            self._enqueue_locked([i for i in self._items if i not in run.earlier])
             run.step = "downloading"
         if run.step == "listing" and run.list_failures >= self.SYNC_LIST_TRIES:
             return lambda: self._finish_sync("failed", self._list_error)
@@ -754,12 +841,29 @@ class MediaManager:
         return parse_browse(r.text)
 
     def _mark_present(self, items: dict[str, MediaItem]) -> None:
-        """Files that are already whole in the folder count as done."""
+        """Files that are already whole in the folder count as done, and go
+        on the list of what was saved. Files that are on that list but no
+        longer in the folder are marked for a run started by a script."""
         if folder_problem(self.folder):
             return
+        saved = SavedList(self.folder)
+        known = saved.known()
+        present: list[tuple[str, int, str, str]] = []
         for item in items.values():
+            identity = self._identity(item)
             if all(self._present(f) for f in item.files):
                 item.state, item.done = "done", item.size
+                present += [(*key, item.slot) for key in identity]
+            else:
+                item.saved_before = all(key in known for key in identity)
+        saved.add(present)
+
+    @staticmethod
+    def _identity(item: MediaItem) -> list[tuple[str, int, str]]:
+        """What the list of saved files knows a listed item's files by. Name
+        and size alone can repeat (numbering starts over, clips are cut at
+        the same size); the length makes a mix-up unlikely."""
+        return [(f.name, f.size, item.duration) for f in item.files]
 
     def _present(self, file: MediaFile) -> bool:
         try:
@@ -809,11 +913,16 @@ class MediaManager:
             self._rate.clear()
             self._changed_locked(item)
         started = time.monotonic()
+        # As listed: a download may correct a size, and the next listing
+        # names the file by the listed one again.
+        listed = self._identity(item)
         try:
             base = 0
             for file in item.files:
                 self._download_file(item, file, base)
                 base += file.size
+            SavedList(self.folder).add(
+                [(*key, item.slot) for key in listed + self._identity(item)])
             with self._cond:
                 item.state, item.done = "done", item.size
                 self._changed_locked(item)

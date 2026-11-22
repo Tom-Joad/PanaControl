@@ -115,6 +115,14 @@ download folder, **Download all** everything that is not there yet.
 * A file that is already in the folder with the same size counts as saved.
   A different file of the same name is kept; the new one gets `-2` in its
   name.
+* The app keeps a list of what it has saved, `panacontrol-saved.json` in
+  the download folder, with the name, size, length and card of each file. A
+  run started by a script ([From a script](#from-a-script)) leaves out what
+  is on that list, also when the file has been moved out of the folder
+  since. In the interface such a file can be saved again; to have a script
+  run fetch it again, remove its entry from the list or delete the list. A
+  list that can't be read (a slip while editing it) is left as it is: no
+  script run starts until it is corrected or deleted.
 * Video takes long over WLAN: about 45 Mbit/s were measured on the DC-GH6,
   which is some 20 GB per hour. Keep the camera on power for large clips.
 * Both card slots are listed, each file with its card. The camera serves
@@ -125,16 +133,19 @@ download folder, **Download all** everything that is not there yet.
 
 ### From a script
 
-A script can have everything saved that is on the cards and not yet in the
-download folder, without the interface:
+A script can have everything saved that is on the cards and was not saved
+before, without the interface:
 
 | Call | Effect |
 |---|---|
-| `POST /api/media/sync` | Start a run: open the cards, save what is missing from both slots, close the cards again. Answers `202` with the state; `409` while a recording runs, a run is under way or no folder is mapped |
-| `GET /api/media/sync` | The running or the last run: `status` (`idle`, `running`, `done`, `failed`, `cancelled`), `error`, `started`, `finished` and `folder`. While it runs also `step` (`listing`, `downloading`), `counts` (how many files are `saved`, `present`, `failed`, `queued`, `active`, `pending`), `remaining` bytes and `rate` in bytes per second. Once it has ended, `files` names every file with `name`, `card`, `size` and its `result`: `saved` in this run, `present` (was in the folder already), `failed` (with `error`) or `skipped` (not reached) |
+| `POST /api/media/sync` | Start a run: open the cards, save what was not saved before from both slots, close the cards again. Answers `202` with the state; `409` while a recording runs, a run is under way, no folder is mapped or the list of saved files can't be read |
+| `GET /api/media/sync` | The running or the last run: `status` (`idle`, `running`, `done`, `failed`, `cancelled`), `error`, `started`, `finished` and `folder`. While it runs also `step` (`listing`, `downloading`), `counts` (how many files are `saved`, `present`, `saved_before`, `failed`, `queued`, `active`, `pending`), `remaining` bytes and `rate` in bytes per second. Once it has ended, `files` names every file with `name`, `card`, `size` and its `result`: `saved` in this run, `present` (was in the folder already), `saved_before` (saved earlier and no longer in the folder, so not fetched again), `failed` (with `error`) or `skipped` (not reached) |
 | `POST /api/media/sync/cancel` | End the run and give the camera back; the part file of the current download stays and is continued next time |
 
 The files land in the download folder, under the names the camera gave them.
+The cards keep their files, so a script may move the clips out of the
+download folder when the run has ended: the next run fetches only what is
+new. Leave `panacontrol-saved.json` and the `.part` files where they are.
 During a run the camera is in playback, as with the cards open in the
 interface, and the interface shows the progress. **Cancel** or **Back to live
 view** there ends the run as `cancelled`.
