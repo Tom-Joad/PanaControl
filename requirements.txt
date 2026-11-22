@@ -2,7 +2,7 @@
 # build installs the same versions (read from a built image with
 # importlib.metadata).
 httpx==0.28.1
-fastapi==0.162.5
+fastapi==0.165.0
 uvicorn==0.54.0
 
 annotated-doc==0.0.6
