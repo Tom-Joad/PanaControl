@@ -1,3 +1,3 @@
 """Remote control for LUMIX cameras over the cam.cgi protocol."""
 
-__version__ = "3.4.0"
+__version__ = "3.5.0"
