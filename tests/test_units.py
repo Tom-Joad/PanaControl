@@ -1213,3 +1213,298 @@ def test_datagram_layout_compares_computed_and_found_jpeg_start():
     assert layout["matches"] and layout["info_type"] == 1
     assert not mediaprobe.datagram_layout(b"\x00" * 40 + b"\xff\xd8\xff")["matches"]
     assert not mediaprobe.datagram_layout(b"short")["matches"]
+
+
+# --------------------------------------------------------------- media ---
+
+import httpx  # noqa: E402
+
+from lumixremote import media as mediamod  # noqa: E402
+
+
+class FakeSession:
+    """Stands in for the controller: the media view is open and ready."""
+
+    def __init__(self):
+        self.media_wanted = True
+        self.media_ready = True
+
+    def media_headers(self):
+        return {"X-SESSION_ID": "0123456789abcdef"}
+
+    def content_count(self):
+        return 1
+
+
+CLIP = bytes(range(256)) * 40          # 10240 bytes
+
+
+def _listing(size: int = len(CLIP)) -> str:
+    didl = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        '<item id="0110001" parentID="0">'
+        '<upnp:class name="videoItem">object.item.videoItem.movie</upnp:class>'
+        '<res protocolInfo="http-get:*:application/octet-stream:PANASONIC.COM_PN='
+        f"CAM_AVC_MOV_ORG;OriginalFileName='P1000001.MOV'\" duration=\"0:00:08\" size=\"{size}\">"
+        "http://192.0.2.10:50001/DO0110001.MOV</res>"
+        '<res protocolInfo="http-get:*:image/jpeg:PANASONIC.COM_PN=CAM_TN" size="5000">'
+        "http://192.0.2.10:50001/DT0110001.JPG</res>"
+        "</item></DIDL-Lite>"
+    ).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (f"<e><b><r><Result>{didl}</Result><NumberReturned>1</NumberReturned>"
+            "<TotalMatches>1</TotalMatches></r></b></e>")
+
+
+class FakeCard:
+    """The camera's ports 60606 and 50001 as far as the downloader uses them."""
+
+    def __init__(self, cut_after: int | None = None):
+        self.cut_after = cut_after      # bytes after which the first reply breaks
+        self.ranges: list[str] = []
+        self.headers: list[dict] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/Server0/CDS_control":
+            return httpx.Response(200, text=_listing())
+        if request.url.path.endswith(".JPG"):
+            return httpx.Response(200, content=b"\xff\xd8thumb\xff\xd9")
+        self.headers.append(dict(request.headers))
+        asked = request.headers.get("range", "")
+        self.ranges.append(asked)
+        if asked:
+            start = int(asked.removeprefix("bytes=").rstrip("-"))
+            return httpx.Response(206, content=CLIP[start:], headers={
+                "Content-Range": f"bytes {start}-{len(CLIP) - 1}/{len(CLIP)}"})
+        if self.cut_after is not None:
+            cut, self.cut_after = self.cut_after, None
+
+            def broken():
+                yield CLIP[:cut]
+                raise httpx.ReadError("connection lost")
+
+            return httpx.Response(200, content=broken())
+        return httpx.Response(200, content=CLIP, headers={"X-FILE_SIZE": str(len(CLIP))})
+
+
+@pytest.fixture
+def card(tmp_path, monkeypatch):
+    """A manager on a fake card, with the waits shortened."""
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.05)
+    monkeypatch.setattr(mediamod.MediaManager, "RESERVE", 0)
+    # Small chunks: what arrived before a break is in the part file.
+    monkeypatch.setattr(mediamod.MediaManager, "CHUNK", 1000)
+    managers = []
+
+    def make(fake: FakeCard, session: FakeSession | None = None):
+        manager = mediamod.MediaManager(session or FakeSession(), "192.0.2.10", tmp_path,
+                                        transport=httpx.MockTransport(fake))
+        managers.append(manager)
+        return manager
+
+    yield make
+    for manager in managers:
+        manager.stop()
+
+
+def _wait(check, seconds: float = 5.0):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if check():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition not reached")
+
+
+def _item(manager):
+    items = manager.snapshot()["items"]
+    return items[0] if items else {}
+
+
+def test_the_card_is_listed_and_a_file_downloaded(card, tmp_path):
+    fake = FakeCard()
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    item = _item(manager)
+    assert (item["name"], item["size"], item["video"]) == ("P1000001.MOV", len(CLIP), True)
+    _wait(lambda: _item(manager)["thumb"])
+    assert manager.thumbnail("0110001").startswith(b"\xff\xd8")
+
+    assert manager.enqueue(None) == 1
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+    assert not list(tmp_path.glob("*.part"))
+    # The download carries the session, like the phone app's.
+    assert fake.headers[0]["x-session_id"] == "0123456789abcdef"
+
+
+def test_a_broken_download_continues_where_it_stopped(card, tmp_path):
+    fake = FakeCard(cut_after=3000)
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(["0110001"])
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert fake.ranges == ["", "bytes=3000-"]
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_part_file_from_an_earlier_run_is_continued(card, tmp_path):
+    (tmp_path / f"P1000001.MOV.{len(CLIP)}.part").write_bytes(CLIP[:4096])
+    fake = FakeCard()
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert fake.ranges == ["bytes=4096-"]
+    assert (tmp_path / "P1000001.MOV").read_bytes() == CLIP
+
+
+def test_a_file_already_in_the_folder_counts_as_saved(card, tmp_path):
+    (tmp_path / "P1000001.MOV").write_bytes(CLIP)
+    fake = FakeCard()
+    manager = card(fake)
+    _wait(lambda: manager.snapshot()["listed"])
+    assert _item(manager)["state"] == "done"
+    assert manager.enqueue(None) == 0
+    assert fake.ranges == []
+
+
+def test_another_file_of_the_same_name_is_not_overwritten(card, tmp_path):
+    (tmp_path / "P1000001.MOV").write_bytes(b"an older clip with the same number")
+    manager = card(FakeCard())
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    _wait(lambda: _item(manager)["state"] == "done")
+    assert (tmp_path / "P1000001.MOV").read_bytes().startswith(b"an older clip")
+    assert (tmp_path / "P1000001-2.MOV").read_bytes() == CLIP
+
+
+def test_closing_the_view_stops_the_download_and_keeps_the_part(card, tmp_path, monkeypatch):
+    session = FakeSession()
+    fake = FakeCard(cut_after=2000)
+    monkeypatch.setattr(mediamod.MediaManager, "RETRY_WAIT", 0.5)
+    manager = card(fake, session)
+    _wait(lambda: manager.snapshot()["listed"])
+    manager.enqueue(None)
+    part = tmp_path / f"P1000001.MOV.{len(CLIP)}.part"
+    _wait(lambda: part.exists() and part.stat().st_size == 2000)
+    session.media_wanted = False
+    manager.closed()
+    _wait(lambda: not manager.busy)
+    assert part.stat().st_size == 2000
+    assert not (tmp_path / "P1000001.MOV").exists()
+
+
+def test_nothing_is_queued_without_a_usable_folder(tmp_path):
+    manager = mediamod.MediaManager(FakeSession(), "192.0.2.10", tmp_path / "missing",
+                                    transport=httpx.MockTransport(FakeCard()))
+    try:
+        _wait(lambda: manager.snapshot()["listed"])
+        with pytest.raises(LumixError, match="does not exist"):
+            manager.enqueue(None)
+        assert "does not exist" in manager.snapshot()["folder_problem"]
+    finally:
+        manager.stop()
+
+
+def test_an_unmapped_volume_is_not_a_download_folder(tmp_path):
+    mountinfo = tmp_path / "mountinfo"
+    hexid = "ab" * 32
+    mountinfo.write_text(
+        f"100 90 8:1 /var/lib/docker/volumes/{hexid}/_data {tmp_path} rw - ext4 /dev/sda1 rw\n")
+    assert "No folder is mapped" in mediamod.folder_problem(tmp_path, mountinfo)
+    mountinfo.write_text(
+        f"100 90 8:1 /var/lib/docker/volumes/clips/_data {tmp_path} rw - ext4 /dev/sda1 rw\n")
+    assert mediamod.folder_problem(tmp_path, mountinfo) == ""
+    assert "configured" in mediamod.folder_problem(None)
+
+
+def test_file_names_from_the_camera_stay_inside_the_folder():
+    assert mediamod.safe_name("../../etc/passwd", "x") == "passwd"
+    assert mediamod.safe_name("..", "fallback.bin") == "fallback.bin"
+    assert mediamod.safe_name("P1000001.MOV", "x") == "P1000001.MOV"
+
+
+# ---------------------------------------------------------- media view ---
+
+class PlaybackCamera(FakeCamera):
+    connected = True
+
+    def set_play_mode(self):
+        self.calls.append("playmode")
+
+    def set_rec_mode(self):
+        self.calls.append("recmode")
+
+    def stop_stream(self):
+        self.calls.append("stopstream")
+
+    def get_setting(self, name):
+        return ""
+
+    def get_state(self):
+        return CameraState(raw={"cammode": self.mode, "rec": self.rec})
+
+
+@pytest.fixture
+def viewer(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(appmod.time, "monotonic", lambda: clock["now"])
+    controller = appmod.Controller(appmod.Config(camera_ip="192.0.2.10"))
+    camera = controller.camera = PlaybackCamera()
+    camera.mode, camera.rec = "rec", "off"
+    controller._read_state()
+    return controller, camera, clock
+
+
+def test_opening_the_cards_switches_to_playback_and_closing_back(viewer):
+    controller, camera, clock = viewer
+    controller._streaming = True
+    controller.media_open()
+    controller._read_state()
+    assert camera.calls == ["stopstream", "playmode"]
+    assert not controller.media_ready
+
+    camera.mode = "play"
+    controller._read_state()
+    # No recmode while the view is open, unlike an ordinary drop into playback.
+    assert camera.calls == ["stopstream", "playmode"]
+    assert controller.media_ready and controller._status == "media"
+
+    controller.media_close()
+    controller._read_state()
+    assert camera.calls[-1] == "recmode"
+
+
+def test_playmode_is_not_repeated_every_poll(viewer):
+    controller, camera, clock = viewer
+    controller.media_open()
+    controller._read_state()
+    clock["now"] += 2
+    controller._read_state()
+    assert camera.calls.count("playmode") == 1
+    clock["now"] += 8
+    controller._read_state()
+    assert camera.calls.count("playmode") == 2
+
+
+def test_the_cards_and_a_recording_exclude_each_other(viewer):
+    controller, camera, _ = viewer
+    controller.media_open()
+    with pytest.raises(LumixError, match="close them"):
+        controller.rec_start()
+    assert "rec_start" not in camera.calls
+
+    controller.media_close()
+    controller.rec_start()
+    with pytest.raises(LumixError, match="recording is running"):
+        controller.media_open()
+
+
+def test_a_recording_started_on_the_camera_closes_the_cards(viewer):
+    controller, camera, _ = viewer
+    controller.media_open()
+    camera.rec = "on"
+    controller._read_state()
+    assert not controller.media_wanted
+    assert "playmode" not in camera.calls

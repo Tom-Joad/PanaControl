@@ -28,6 +28,11 @@ services:
       # behind a reverse proxy (comma-separated).
       LUMIX_ALLOWED_HOSTS: ${LUMIX_ALLOWED_HOSTS:-}
 
+    # Where files from the camera's cards are saved. Without this mapping
+    # the download is switched off.
+    volumes:
+      - ${LUMIX_DOWNLOADS:-./downloads}:/downloads
+
     ports:
       - "${LUMIX_WEB_BIND:-127.0.0.1}:8080:8080/tcp"
       # The camera sends the frames to the address startstream came from,

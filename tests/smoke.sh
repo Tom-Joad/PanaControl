@@ -141,6 +141,22 @@ echo "== foreign host names are refused (DNS rebinding)"
 [[ $(post /api/af '' 'Host:tower:8080' 'Sec-Fetch-Site:same-origin') == 409 ]] \
     || fail "a command under a LAN host name was refused"
 
+echo "== the cards view"
+media() { # prints one field of /api/media
+    docker exec -i "$NAME" python3 - "$1" <<'PY'
+import json, os, sys, urllib.request
+url = f"http://127.0.0.1:{os.environ['LUMIX_WEB_PORT']}/api/media"
+print(json.load(urllib.request.urlopen(url, timeout=5))[sys.argv[1]])
+PY
+}
+# No folder mapped: /downloads is an anonymous volume and must not be used.
+[[ $(media folder_problem) == *"No folder is mapped"* ]] \
+    || fail "an unmapped /downloads is not refused: '$(media folder_problem)'"
+[[ $(post /api/media/open '' 'Sec-Fetch-Site:cross-site') == 403 ]] || fail "cross-site open not refused"
+[[ $(post /api/media/open '' 'Sec-Fetch-Site:same-origin') == 409 ]] || fail "the cards opened without a camera"
+[[ $(post /api/media/download '{"ids":[]}' 'Sec-Fetch-Site:same-origin') == 400 ]] \
+    || fail "an empty download request is not a 400"
+
 echo "== ordered shutdown"
 # SIGTERM must reach the Python process: only then its lifespan handler runs
 # and sends stopstream. Without it, s6 kills the app after
@@ -149,5 +165,21 @@ docker stop -t 30 "$NAME" >/dev/null
 CODE=$(docker inspect -f '{{.State.ExitCode}}' "$NAME")
 [[ $CODE == 0 ]] || fail "exit code $CODE instead of 0"
 in_log '"event":"shutting_down"' || fail "the app did not shut down in order"
+
+echo "== a mapped download folder is usable"
+docker rm -f "$NAME" >/dev/null
+DOWNLOADS=$(mktemp -d)
+# As Docker creates a missing host folder: owned by root.
+docker run --rm -v "$DOWNLOADS":/d --entrypoint chown "$IMAGE" 0:0 /d
+docker run -d --name "$NAME" "${HARDENING[@]}" -e PUID="$PUID" -e PGID="$PGID" \
+    -e LUMIX_CAMERA_IP="$CAMERA" -v "$DOWNLOADS":/downloads "$IMAGE" >/dev/null
+for _ in $(seq 1 30); do
+    [[ $(docker inspect -f '{{.State.Health.Status}}' "$NAME") == healthy ]] && break
+    sleep 2
+done
+[[ $(media folder_problem) == "" ]] || fail "a mapped folder is refused: '$(media folder_problem)'"
+[[ $(docker exec "$NAME" stat -c %u /downloads) == "$PUID" ]] || fail "/downloads was not handed to abc"
+docker stop -t 30 "$NAME" >/dev/null
+rmdir "$DOWNLOADS"
 
 echo "OK"

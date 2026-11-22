@@ -10,6 +10,10 @@ device_name = "lumix-remote"
 # Local UDP port the camera sends the frames to
 port = 49199
 
+[media]
+# Folder for files downloaded from the camera's cards. Empty: no download.
+download_dir = ""
+
 [web]
 # Where the web interface listens
 host = "127.0.0.1"

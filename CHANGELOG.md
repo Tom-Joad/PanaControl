@@ -5,6 +5,20 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
+## [Unreleased]
+
+### Added
+- **Download what is on the cards.** The new **Cards** view lists the files
+  on the camera's cards with preview picture, length and size and saves
+  single files or all of them into the new `/downloads` folder. An
+  interrupted download continues where it stopped. The camera is in playback
+  meanwhile, so the live view and recording pause until the view is closed.
+  To use it, map a folder to `/downloads` (Unraid: the new **Downloads**
+  path in the template); without it everything works as before and only the
+  download is switched off.
+- `python3 -m lumixremote.mediaprobe`, a read-only test of listing,
+  download, events and state on a real camera.
+
 ## [3.3.4] - 2026-11-19
 
 ### Changed

@@ -323,6 +323,24 @@ class Camera:
         self._require_session()
         self._get_xml(mode="camcmd", value="recmode")
 
+    def set_play_mode(self) -> None:
+        """Switch the camera to playback, which listing the cards needs."""
+        self._require_session()
+        self._get_xml(mode="camcmd", value="playmode")
+
+    def content_count(self) -> int:
+        """Number of files on the cards; -1 while the camera builds its index."""
+        self._require_session()
+        root = self._get_xml(mode="get_content_info")
+        try:
+            return int(root.findtext("total_content_number", default="-1"))
+        except ValueError:
+            return -1
+
+    def session_headers(self) -> dict[str, str]:
+        """The header that marks a request as part of the remote session."""
+        return self._headers()
+
     def autofocus(self) -> None:
         self._require_session()
         self._get_xml(mode="camcmd", value="oneshot_af")

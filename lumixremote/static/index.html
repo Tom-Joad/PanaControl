@@ -82,6 +82,7 @@
   .mark.connect { background: var(--status-neutral); }
   .mark.standby { background: var(--status-warning); }
   .mark.offline { background: var(--status-negative); }
+  .mark.media   { background: var(--status-neutral); }
 
   /* ---- Exposure and readings: label over value ---------------------- */
 
@@ -234,6 +235,138 @@
     word-break: break-word;
   }
 
+  /* ---- Cards: what is on them, and the downloads --------------------- */
+  /* Takes the stage while it is open: in playback the camera has no live
+     view to send. */
+
+  #media {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    background: var(--surface-ink);
+    text-align: left;
+  }
+  body.media #media { display: flex; }
+  body.media #view,
+  body.media #overlay,
+  body.media #full { display: none; }
+
+  .media-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-12);
+    padding: var(--space-12) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  .media-bar .summary {
+    margin-right: auto;
+    color: var(--text-on-ink-muted);
+    font: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+  }
+  .media-bar .btn {
+    min-height: 44px;
+    padding: 0 var(--space-18);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+
+  #media-note {
+    display: none;
+    padding: var(--space-12) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+    border-left: var(--stroke-accent) solid var(--status-warning);
+    color: var(--text-on-ink);
+    font: var(--text-meta);
+  }
+  #media-note.show { display: block; }
+
+  #media-total {
+    display: none;
+    align-items: center;
+    gap: var(--space-14);
+    padding: var(--space-10) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+    color: var(--text-on-ink-muted);
+    font: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+  }
+  #media-total.show { display: flex; }
+
+  #media-list {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+  #media-list li {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-14);
+    padding: var(--space-10) var(--space-14);
+    border-bottom: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  #media-list .thumb {
+    width: 96px;
+    height: 72px;
+    object-fit: cover;
+    background: var(--pitch);
+    border: var(--stroke-hairline) solid var(--border-on-ink);
+  }
+  #media-list .name {
+    font: var(--text-body-on-ink);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    overflow-wrap: anywhere;
+  }
+  #media-list .meta {
+    margin-top: var(--space-4);
+    color: var(--text-on-ink-faint);
+    font: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+  }
+  #media-list .meta.failed { color: var(--text-on-ink); }
+  #media-list .btn {
+    min-width: 8.5em;
+    min-height: 44px;
+    padding: 0 var(--space-14);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+  #media-empty {
+    padding: var(--space-24);
+    color: var(--text-on-ink-muted);
+    text-align: center;
+  }
+
+  /* Progress: a hairline track, filled in the positive status colour and
+     always next to its number. */
+  .bar {
+    height: 4px;
+    margin-top: var(--space-6);
+    background: var(--border-on-ink);
+  }
+  .bar > i {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: var(--status-positive);
+  }
+  #media-total .bar { flex: 1; margin-top: 0; }
+
+  @media (max-width: 760px) {
+    #media-list li { grid-template-columns: 64px minmax(0, 1fr); }
+    #media-list .thumb { width: 64px; height: 48px; }
+    #media-list .btn { grid-column: 1 / -1; }
+    .media-bar .summary { width: 100%; }
+    .media-bar .btn { flex: 1; padding: 0 var(--space-6); }
+  }
+
   /* ---- Full screen: only the live view ------------------------------ */
 
   #full {
@@ -345,6 +478,7 @@
     <button class="btn btn--on-ink" id="af">Autofocus</button>
     <button class="btn btn--primary" id="start">Record</button>
     <button class="btn btn--on-ink" id="stop">Stop</button>
+    <button class="btn btn--on-ink" id="cards" title="Show and download what is on the cards">Cards</button>
   </div>
 </header>
 
@@ -356,6 +490,19 @@
     <div class="hint"  id="ov-hint"></div>
     <div class="detail" id="ov-detail"></div>
   </div>
+  <section id="media" aria-label="Cards">
+    <div class="media-bar">
+      <span class="tracked">Cards</span>
+      <span class="summary" id="media-summary"></span>
+      <button class="btn btn--primary" id="media-all" type="button">Download all</button>
+      <button class="btn btn--on-ink" id="media-cancel" type="button">Cancel</button>
+      <button class="btn btn--on-ink" id="media-refresh" type="button">Refresh</button>
+      <button class="btn btn--on-ink" id="media-close" type="button">Back to live view</button>
+    </div>
+    <div id="media-note" role="status"></div>
+    <div id="media-total"><span id="media-total-text"></span><div class="bar"><i id="media-total-bar"></i></div></div>
+    <ul id="media-list"></ul>
+  </section>
   <button id="full" type="button" title="Full screen (V, or double-click the picture)" aria-label="Full screen">
     <svg class="enter" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
       <path d="M2 7V2h5M13 2h5v5M18 13v5h-5M7 18H2v-5"/>
@@ -405,6 +552,7 @@ view.addEventListener("error", () => {
 
 const LINK_TEXT = {
   online:     "Connected",
+  media:      "Cards open",
   connecting: "Connecting",
   offline:    "No connection",
   standby:    "Not ready"
@@ -436,6 +584,7 @@ function render(s, transportError) {
     el("iso").disabled = true;
     el("aperture").textContent = "--";
     stage.classList.remove("recording");
+    setMedia(false);
     setButtons(false, false);
     overlay(true, "Control unreachable",
             "The local service does not answer. Is the process still running?",
@@ -445,6 +594,7 @@ function render(s, transportError) {
 
   el("mark").className = "mark " + (
     s.status === "online"  ? "online"  :
+    s.status === "media"   ? "media"   :
     s.status === "offline" ? "offline" :
     s.status === "standby" ? "standby" : "connect");
 
@@ -458,9 +608,10 @@ function render(s, transportError) {
   el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
 
   stage.classList.toggle("recording", !!s.recording);
+  setMedia(!!s.media);
   // Stop needs a session, not record mode: a recording the camera reports
   // outside 'rec' can still be stopped.
-  const session = s.status === "online" || s.status === "standby";
+  const session = s.status === "online" || s.status === "standby" || s.status === "media";
   setButtons(s.status === "online" && !s.recording, session && s.recording);
 
   if (s.status === "standby" && s.recording) {
@@ -574,6 +725,10 @@ function setButtons(canStart, canStop) {
   el("af").disabled    = !(lastStatus && lastStatus.status === "online");
   el("start").disabled = !canStart;
   el("stop").disabled  = !canStop;
+  // The cards need a session and no recording: playback would end it.
+  const s = lastStatus;
+  el("cards").disabled = !(s && !s.recording && !s.media
+                           && (s.status === "online" || s.status === "standby"));
 }
 
 function overlay(show, title, hint, detail) {
@@ -624,6 +779,176 @@ function flash(message, label) {
   flashTimer = setTimeout(() => f.classList.remove("show"), 5000);
 }
 
+/* ---- Cards --------------------------------------------------------- */
+// The list is rebuilt only when its rows change; progress is written into
+// the existing rows, so a button under the finger stays where it is.
+
+let mediaOpen = false;
+let mediaTimer = null;
+let mediaRows = "";
+
+function setMedia(open) {
+  if (open === mediaOpen) return;
+  mediaOpen = open;
+  body.classList.toggle("media", open);
+  clearInterval(mediaTimer);
+  mediaTimer = null;
+  if (open) {
+    if (body.classList.contains("full")) leaveFull();
+    mediaRows = "";
+    el("media-list").innerHTML = "";
+    pollMedia();
+    mediaTimer = setInterval(pollMedia, 1000);
+  } else {
+    openStream();
+  }
+}
+
+async function pollMedia() {
+  try {
+    const r = await fetch("/api/media", { cache: "no-store" });
+    if (r.ok) renderMedia(await r.json());
+  } catch (err) { /* the state poll reports a dead service */ }
+}
+
+function fmtSize(n) {
+  if (!n) return "--";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+  return (n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i];
+}
+
+function fmtDuration(seconds) {
+  if (seconds == null) return "";
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60);
+  return h ? h + " h " + m + " min" : m ? m + " min" : "under a minute";
+}
+
+function renderMedia(m) {
+  const items = m.items || [];
+  const total = items.reduce((sum, i) => sum + i.size, 0);
+  const done = items.filter((i) => i.state === "done").length;
+
+  let note = m.folder_problem || m.list_error || "";
+  if (!note && lastStatus && lastStatus.status === "media" && lastStatus.error) note = lastStatus.error;
+  el("media-note").textContent = note;
+  el("media-note").classList.toggle("show", !!note);
+
+  el("media-summary").textContent = !m.listed
+    ? (m.ready ? "Reading the cards" : "Switching the camera to playback")
+    : items.length + (items.length === 1 ? " file, " : " files, ") + fmtSize(total)
+      + (done ? ", " + done + " already saved" : "")
+      + (m.free != null ? " · " + fmtSize(m.free) + " free in the folder" : "");
+
+  const busy = m.queued > 0;
+  el("media-all").disabled = !m.listed || !!m.folder_problem || done === items.length;
+  el("media-cancel").disabled = !busy;
+  el("media-refresh").disabled = busy || !m.ready;
+
+  el("media-total").classList.toggle("show", busy);
+  if (busy) {
+    const queuedSize = items.filter((i) => i.state === "queued" || i.state === "active")
+                            .reduce((sum, i) => sum + i.size, 0);
+    el("media-total-text").textContent = m.queued + (m.queued === 1 ? " file" : " files")
+      + " to go, " + fmtSize(m.remaining)
+      + (m.rate ? " · " + (m.rate * 8 / 1e6).toFixed(0) + " Mbit/s" : " · waiting for the camera")
+      + (m.eta != null ? " · about " + fmtDuration(m.eta) + " left" : "");
+    el("media-total-bar").style.width =
+      (queuedSize ? 100 * (queuedSize - m.remaining) / queuedSize : 0).toFixed(1) + "%";
+  }
+
+  const list = el("media-list");
+  const key = items.map((i) => i.id).join(",") + "|" + m.listed;
+  if (key !== mediaRows) {
+    mediaRows = key;
+    list.innerHTML = "";
+    if (m.listed && !items.length) {
+      const empty = document.createElement("li");
+      empty.id = "media-empty";
+      empty.style.display = "block";
+      empty.textContent = "The cards hold no files.";
+      list.appendChild(empty);
+    }
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.dataset.id = item.id;
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.alt = "";
+      const text = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = item.name;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.appendChild(document.createElement("i"));
+      text.append(name, meta, bar);
+      const button = document.createElement("button");
+      button.className = "btn btn--on-ink";
+      button.type = "button";
+      button.addEventListener("click", () => mediaCommand("/api/media/download", { ids: [item.id] }));
+      li.append(img, text, button);
+      list.appendChild(li);
+    }
+  }
+
+  for (const item of items) {
+    const li = list.querySelector('li[data-id="' + CSS.escape(item.id) + '"]');
+    if (!li) continue;
+    const img = li.querySelector(".thumb");
+    if (item.thumb && !img.getAttribute("src")) {
+      img.src = "/api/media/thumb/" + encodeURIComponent(item.id);
+    }
+    const parts = [];
+    if (item.duration) parts.push(item.duration);
+    parts.push(fmtSize(item.size));
+    const percent = item.size ? 100 * item.done / item.size : 0;
+    if (item.state === "active") parts.push("downloading, " + percent.toFixed(1) + " %");
+    else if (item.state === "queued") parts.push("waiting");
+    else if (item.state === "done") parts.push("saved");
+    else if (item.state === "failed") parts.push("failed: " + item.error);
+    const meta = li.querySelector(".meta");
+    meta.textContent = parts.join(" · ");
+    meta.classList.toggle("failed", item.state === "failed");
+    const bar = li.querySelector(".bar");
+    bar.style.visibility = item.state === "active" ? "visible" : "hidden";
+    bar.firstChild.style.width = percent.toFixed(1) + "%";
+    const button = li.querySelector(".btn");
+    button.textContent = item.state === "done" ? "Saved"
+                       : item.state === "failed" ? "Try again" : "Download";
+    button.disabled = !!m.folder_problem
+                      || ["done", "queued", "active"].includes(item.state);
+  }
+}
+
+async function mediaCommand(path, payload) {
+  try {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : {},
+      body: payload ? JSON.stringify(payload) : undefined
+    });
+    if (!r.ok) {
+      let detail = "HTTP " + r.status;
+      try { detail = (await r.json()).detail || detail; } catch (e) { /* keep the status */ }
+      flash(detail);
+    }
+  } catch (err) {
+    flash("Command not delivered: " + (err && err.message || err));
+  }
+  await poll();
+  if (mediaOpen) pollMedia();
+}
+
+el("cards").addEventListener("click", () => mediaCommand("/api/media/open"));
+el("media-close").addEventListener("click", () => mediaCommand("/api/media/close"));
+el("media-all").addEventListener("click", () => mediaCommand("/api/media/download", { all: true }));
+el("media-cancel").addEventListener("click", () => mediaCommand("/api/media/cancel"));
+el("media-refresh").addEventListener("click", () => mediaCommand("/api/media/refresh"));
+
 el("af").addEventListener("click",    (e) => send("/api/af", e.currentTarget));
 el("start").addEventListener("click", (e) => send("/api/rec/start", e.currentTarget));
 // Stopping a recording is deliberate: only a click or tap stops it. A click
@@ -650,7 +975,7 @@ document.addEventListener("keydown", (ev) => {
   } else if ((ev.key === "f" || ev.key === "F") && ev.target.tagName !== "SELECT") {
     if (!el("af").disabled) el("af").click();
   } else if ((ev.key === "v" || ev.key === "V") && ev.target.tagName !== "SELECT") {
-    toggleFull();
+    if (!mediaOpen) toggleFull();
   } else if (ev.key === "Escape" && body.classList.contains("full") && !fullscreenElement()) {
     // Hidden bar without real full screen: Esc leaves it as well.
     leaveFull();
@@ -730,7 +1055,7 @@ el("full").addEventListener("click", (e) => {
 // hand: Safari on the iPhone does not reliably send dblclick for taps.
 let lastTap = { time: 0, x: 0, y: 0 };
 stage.addEventListener("pointerup", (ev) => {
-  if (ev.target.closest("#full")) return;
+  if (ev.target.closest("#full") || mediaOpen) return;
   const near = Math.abs(ev.clientX - lastTap.x) < 40 && Math.abs(ev.clientY - lastTap.y) < 40;
   if (ev.timeStamp - lastTap.time < 350 && near) {
     lastTap = { time: 0, x: 0, y: 0 };

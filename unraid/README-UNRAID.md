@@ -54,12 +54,21 @@ docker run -d \
   --security-opt no-new-privileges \
   -e PUID=99 -e PGID=100 -e TZ=Europe/Berlin \
   -e LUMIX_CAMERA_IP=192.0.2.10 \
+  -v /mnt/user/media/panacontrol:/downloads \
   ghcr.io/tom-joad/panacontrol:latest
 ```
 
 The image is built on linuxserver.io's Alpine base: it starts as root,
 prepares the `abc` user with `PUID:PGID` and runs the app as that user. The
-app writes no files and needs no path.
+only path is **Downloads** (`/downloads`), where the files you download from
+the camera's cards are saved; there is no `/config`.
+
+A container installed before the download existed has no **Downloads**
+path. Everything else works as before; to use the download, open `Edit`,
+choose **Add another Path, Port, Variable, Label or Device**, and add a path
+with the container path `/downloads` and a folder on a share, for example
+`/mnt/user/media/panacontrol`. Until then the **Cards** view says that no
+folder is mapped.
 
 ## Settings
 
@@ -68,7 +77,7 @@ app writes no files and needs no path.
 | `PUID` | `99` | User the app runs as (`nobody`), not `0` |
 | `PGID` | `100` | Group the app runs as (`users`), not `0` |
 | `TZ` | `Etc/UTC` | Time zone of the log time stamps, e.g. `Europe/Berlin` |
-| `UMASK` | `002` | File mode mask; the app writes no files |
+| `UMASK` | `002` | File mode mask for the downloaded files |
 | `LUMIX_CAMERA_IP` | -- | The camera's address, required |
 | `LUMIX_DEVICE_NAME` | `lumix-remote` | Name shown on the camera's display during registration |
 | `LUMIX_STREAM_PORT` | `49199` | UDP port for the live view |

@@ -2,7 +2,7 @@
 
 Remote control and live view for LUMIX cameras over the cam.cgi protocol:
 live view in the browser, autofocus, start and stop video recording, ISO,
-and the current aperture as a reading. Developed against a DC-GH6 (firmware
+the current aperture as a reading, and downloading what is on the cards. Developed against a DC-GH6 (firmware
 3.01) and kept platform-neutral. The container is built on linuxserver.io's
 Alpine image with its conventions (`PUID`, `PGID`, `UMASK`, `TZ`).
 
@@ -67,6 +67,7 @@ docker run -d \
   --security-opt no-new-privileges \
   -e PUID=1000 -e PGID=1000 -e TZ=Europe/Berlin \
   -e LUMIX_CAMERA_IP=<CAMERA-IP> \
+  -v /path/to/downloads:/downloads \
   --restart unless-stopped \
   ghcr.io/tom-joad/panacontrol:latest
 ```
@@ -99,6 +100,26 @@ Lock does this; over plain HTTP, as on the LAN, the page plays a short,
 silent, muted video instead, which keeps phones and tablets from locking.
 If a device locks anyway, set its auto-lock to never.
 
+### The cards
+
+**Cards** lists what is on the camera's cards, with a preview picture, the
+length and the size of each file. **Download** saves one file into the
+download folder, **Download all** everything that is not there yet.
+
+* The camera has to be in playback for this, so there is no live view and
+  no recording while the cards are open; **Back to live view** switches
+  back. The cards can't be opened while a recording runs.
+* A file is called `<name>.<size>.part` until it is complete. A download
+  that was cancelled or interrupted (the camera out of reach, the container
+  restarted) continues from there the next time, it does not start over.
+* A file that is already in the folder with the same size counts as saved.
+  A different file of the same name is kept; the new one gets `-2` in its
+  name.
+* Video takes long over WLAN: about 45 Mbit/s were measured on the DC-GH6,
+  which is some 20 GB per hour. Keep the camera on power for large clips.
+* Verified on the DC-GH6 with MOV clips. Photos and RAW files go the same
+  way but were not on the cards when this was measured.
+
 ## Parameters
 
 | Parameter | Default | Meaning |
@@ -108,7 +129,8 @@ If a device locks anyway, set its auto-lock to never.
 | `-p 49199:49199/udp` | -- | Live view; the same number on both sides (only with port mapping) |
 | `-e PUID` | `911` | User the app runs as (Unraid: `99`), not `0` |
 | `-e PGID` | `911` | Group the app runs as (Unraid: `100`), not `0` |
-| `-e UMASK` | `022` | File mode mask; the app writes no files |
+| `-v /downloads` | -- | Folder for the files downloaded from the cards. Without it the download is switched off |
+| `-e UMASK` | `022` | File mode mask for the downloaded files |
 | `-e TZ` | `Etc/UTC` | Time zone of the log time stamps, e.g. `Europe/Berlin` |
 | `-e LUMIX_CAMERA_IP` | -- (required) | The camera's address |
 | `-e LUMIX_DEVICE_NAME` | `lumix-remote` | Name shown on the camera's display during registration |
@@ -122,8 +144,11 @@ If a device locks anyway, set its auto-lock to never.
 In the container the configuration comes from environment variables, so no
 `config.toml` has to be mounted. They take precedence over `config.toml`.
 
-There are no volumes: the app keeps no state and writes no files. This
-deviates from the usual `/config` volume on purpose.
+There is no `/config` volume: the app keeps no state of its own, and an
+interrupted download is continued from the part file in the download folder.
+`/downloads` only receives what you download from the cards. If no folder is
+mapped there, the app refuses to download instead of filling Docker's own
+storage.
 
 ## Network
 
@@ -187,6 +212,12 @@ the camera.
 | `POST /api/rec/start` | Start recording |
 | `POST /api/rec/stop` | Stop recording |
 | `POST /api/iso` | Set the sensitivity, JSON `{"value": "800"}` |
+| `GET /api/media` | The cards' contents, the download queue and its progress |
+| `POST /api/media/open`, `/close` | Open the cards (camera to playback) and close them again |
+| `POST /api/media/download` | Queue files, JSON `{"ids": ["..."]}` or `{"all": true}` |
+| `POST /api/media/cancel` | Stop the running download and empty the queue |
+| `POST /api/media/refresh` | Read the cards again |
+| `GET /api/media/thumb/<id>` | Preview picture of a file |
 
 The interface takes the ISO values from the camera's menu definition; they
 are not in the program. Set values are read back, because the camera snaps
@@ -199,8 +230,8 @@ header of the live view datagram and shown.
 
 ## Security
 
-The interface has no login: whoever reaches it controls the camera and sees
-the live view. Keep it on a trusted network, or put a reverse proxy with
+The interface has no login: whoever reaches it controls the camera, sees
+the live view and can download the cards' contents into the download folder. Keep it on a trusted network, or put a reverse proxy with
 authentication in front. Commands that a browser sends from another web
 site are refused, so a page open in the same browser can't start or stop a
 recording; scripts such as `curl` still work.
@@ -303,6 +334,7 @@ contain the camera's identifiers and stay out of the repository.
 | `lumixremote/camera.py` | DLNA probe, registration, commands, reconnect |
 | `lumixremote/stream.py` | UDP receiver, JPEG extraction, statistics |
 | `lumixremote/app.py` | Connection keeper, routes, MJPEG output |
+| `lumixremote/media.py` | Listing the cards, download queue with resume |
 | `lumixremote/static/` | Interface without a build step, stylesheets and fonts; `app/` holds the home-screen manifest, icons and the keep-awake video |
 | `lumixremote/probe.py` | Measuring run and results |
 | `lumixremote/mediaprobe.py` | Test of listing, download, events and state |

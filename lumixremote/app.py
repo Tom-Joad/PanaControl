@@ -6,6 +6,8 @@ Three strands run side by side:
     few seconds and kicks the stream when it stalls
   * `LiveStream` receives the UDP frames, unchanged
   * FastAPI serves the interface, the MJPEG output and the command routes
+  * `MediaManager` lists the cards and downloads files while the media view
+    is open
 
 Only one connection to the camera exists, no matter how many browsers watch.
 
@@ -30,12 +32,13 @@ from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__, logging_setup
 from .camera import BadReply, Camera, CameraState, LumixError, NotReachable
+from .media import MediaManager
 from .stream import LiveStream
 
 log = logging.getLogger("lumixremote.app")
@@ -71,6 +74,8 @@ class Config:
     web_port: int = 8080
     # Host names besides the ones that can't be taken over (see host_allowed).
     allowed_hosts: tuple[str, ...] = ()
+    # Where files from the camera's cards are saved; empty switches that off.
+    download_dir: str = ""
 
     @classmethod
     def load(cls, path: pathlib.Path | None = None) -> "Config":
@@ -95,6 +100,7 @@ class Config:
             return value
 
         camera, stream, web = section("camera"), section("stream"), section("web")
+        media = section("media")
 
         def text(env: str, table: dict, key: str, default: str) -> str:
             value = os.environ.get(env, table.get(key, default))
@@ -132,6 +138,7 @@ class Config:
             web_host=text("LUMIX_WEB_HOST", web, "host", "127.0.0.1"),
             web_port=port("LUMIX_WEB_PORT", web.get("port", 8080)),
             allowed_hosts=allowed_hosts,
+            download_dir=text("LUMIX_DOWNLOAD_DIR", media, "download_dir", "").strip(),
         )
         if not cfg.camera_ip:
             raise SystemExit(
@@ -276,6 +283,9 @@ class Controller:
     # for recmode; if no drop comes, it goes ahead after this long in 'rec'.
     RESUME_NO_DROP = 20.0
 
+    # The media view needs playback. Gap between two playmode attempts.
+    PLAYMODE_RETRY = 8.0
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.camera = Camera(cfg.camera_ip, device_name=cfg.device_name,
@@ -327,6 +337,10 @@ class Controller:
         self._focusmode = ""
         self._iso_values: list[str] = []
         self._lens_anchor = b""
+        # The media view is open: the camera stays in playback, no live view
+        # is requested and no recording is started.
+        self._media = False
+        self._last_playmode = 0.0
         # Last known session, so the shutdown can still send stopstream when
         # the connection counts as lost.
         self._stale_session: str | None = None
@@ -462,7 +476,10 @@ class Controller:
         # every reconnect. So clean up first.
         self.camera.stop_stream()
         self._read_capabilities()
-        self._settle()
+        if not self._media:
+            # With the media view open the camera is wanted in playback,
+            # where it goes by itself after the registration.
+            self._settle()
         self._last_poll = 0.0  # forces an immediate state poll
 
     def _drop_stale_resume(self) -> None:
@@ -559,8 +576,9 @@ class Controller:
             self._read_state()
 
         # In playback mode the camera has no live view to send. A startstream
-        # is acknowledged but stays silent.
-        if self._cammode != "rec":
+        # is acknowledged but stays silent. With the media view open, none is
+        # wanted either.
+        if self._cammode != "rec" or self._media:
             return
 
         if self._streaming and not self.stream.running:
@@ -627,6 +645,14 @@ class Controller:
         stale = stop_seq != self._stop_seq
         self._follow_recording(state.recording and not stale, mode)
 
+        if self._media and state.recording:
+            # Started on the camera itself: the recording comes first.
+            log.info("media_closed_recording")
+            self._media = False
+        if self._media:
+            self._hold_playback(mode)
+            return
+
         if mode == "rec":
             self._recmode_tried = False
             self._recmode_error = ""
@@ -673,6 +699,70 @@ class Controller:
         elif self._recmode_error:
             reason += f". Mode change refused: {self._recmode_error}"
         self._set(status="standby", error=reason)
+
+    def _hold_playback(self, mode: str) -> None:
+        """Keep the camera in playback while the media view is open."""
+        if mode == "play":
+            self._set(status="media", error="")
+            return
+        self._set(status="media", error=f"Waiting for playback, the camera is in '{mode}'")
+        now = time.monotonic()
+        if now - self._last_playmode < self.PLAYMODE_RETRY:
+            return
+        self._last_playmode = now
+        try:
+            if self._streaming:
+                self.camera.stop_stream()
+                self._streaming = False
+            self.camera.set_play_mode()
+            self._last_poll = 0.0   # check right away
+            log.info("playmode_sent", extra={"cammode": mode})
+        except LumixError as exc:
+            log.info("playmode_refused", extra={"error": str(exc)})
+            self._set(error=f"The camera refused the change to playback: {exc.reply or exc}")
+
+    # ------------------------------------------------------------------ #
+    # Media view
+    # ------------------------------------------------------------------ #
+
+    def media_open(self) -> None:
+        """Open the media view. Refused while a recording runs or is wanted."""
+        if not self.camera.connected:
+            raise LumixError("No connection to the camera")
+        if self._recording() or self._rec_wanted:
+            raise LumixError("A recording is running: stop it before opening the cards")
+        self._media = True
+        self._last_playmode = 0.0
+        self._last_poll = 0.0
+        log.info("media_opened")
+
+    def media_close(self) -> None:
+        """Close the media view; the camera goes back to record mode."""
+        if not self._media:
+            return
+        self._media = False
+        self._recmode_tried = False
+        self._recmode_error = ""
+        self._last_poll = 0.0
+        log.info("media_closed")
+
+    @property
+    def media_wanted(self) -> bool:
+        return self._media
+
+    @property
+    def media_ready(self) -> bool:
+        """Can the cards be listed and files be fetched right now?"""
+        with self._lock:
+            playback = self._cammode == "play"
+        return (self._media and playback and self.camera.connected
+                and self._unreachable_since is None)
+
+    def media_headers(self) -> dict[str, str]:
+        return self.camera.session_headers()
+
+    def content_count(self) -> int:
+        return self.camera.content_count()
 
     def _follow_recording(self, recording: bool, mode: str) -> None:
         """Start a recording again that a re-registration has ended."""
@@ -725,6 +815,8 @@ class Controller:
             "attempt": self._resumes, "after_s": round(since_connect, 1)})
 
     def rec_start(self) -> None:
+        if self._media:
+            raise LumixError("The cards are open: close them before recording")
         self.camera.rec_start()
         self._rec_wanted = True
         self._resume_armed = False
@@ -869,6 +961,7 @@ class Controller:
             "stream_port": self.cfg.stream_port,
             # Empty while the UDP receiver is fine.
             "stream_error": self.stream.error,
+            "media": self._media,
         }
 
 
@@ -882,12 +975,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = cfg
     controller = Controller(cfg)
     app.state.controller = controller
+    media = MediaManager(controller, cfg.camera_ip,
+                         pathlib.Path(cfg.download_dir) if cfg.download_dir else None)
+    app.state.media = media
     controller.start()
     try:
         yield
     finally:
         # Runs on Ctrl+C and on SIGTERM from the container too.
         log.info("shutting_down")
+        # First the download, so the camera is idle when the session goes.
+        await run_in_threadpool(media.stop)
         await run_in_threadpool(controller.stop)
 
 
@@ -1076,6 +1174,76 @@ async def set_iso(request: Request) -> dict:
     return {"ok": True, "iso": actual}
 
 
+# ---- Media view: the cards' contents and the downloads ------------------- #
+
+def _media(request: Request) -> MediaManager:
+    media: MediaManager | None = getattr(request.app.state, "media", None)
+    if media is None:
+        raise HTTPException(status_code=503, detail="Control not ready")
+    return media
+
+
+@app.get("/api/media")
+async def media_state(request: Request) -> dict:
+    return await run_in_threadpool(_media(request).snapshot)
+
+
+@app.post("/api/media/open", **COMMAND)
+async def media_open(request: Request) -> dict:
+    return await _command(_controller(request).media_open)
+
+
+@app.post("/api/media/close", **COMMAND)
+async def media_close(request: Request) -> dict:
+    """Close the view. A running download is stopped and continues next time."""
+    controller, media = _controller(request), _media(request)
+
+    def close() -> None:
+        controller.media_close()
+        media.closed()
+
+    return await _command(close)
+
+
+@app.post("/api/media/refresh", **COMMAND)
+async def media_refresh(request: Request) -> dict:
+    return await _command(_media(request).refresh)
+
+
+@app.post("/api/media/download", **COMMAND)
+async def media_download(request: Request) -> dict:
+    """Queue files: `{"ids": [...]}` for some, `{"all": true}` for everything."""
+    media = _media(request)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body is not JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body is not an object")
+    ids = payload.get("ids")
+    if payload.get("all") is True:
+        ids = None
+    elif not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(status_code=400, detail="Give ids as a list, or all: true")
+    try:
+        queued = await run_in_threadpool(media.enqueue, ids)
+    except LumixError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "queued": queued}
+
+
+@app.post("/api/media/cancel", **COMMAND)
+async def media_cancel(request: Request) -> dict:
+    return await _command(_media(request).cancel)
+
+
+@app.get("/api/media/thumb/{item_id}")
+async def media_thumb(request: Request, item_id: str) -> Response:
+    data = _media(request).thumbnail(item_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="No thumbnail")
+    return Response(content=data, media_type="image/jpeg")
+
 
 @app.get("/stream.mjpg")
 async def stream_mjpeg(request: Request) -> StreamingResponse:
@@ -1150,6 +1318,7 @@ def main() -> int:
         "version": __version__, "camera": cfg.camera_ip,
         "device_name": cfg.device_name, "stream_port": cfg.stream_port,
         "web": f"http://{cfg.web_host}:{cfg.web_port}", "log_level": level,
+        "download_dir": cfg.download_dir or "-",
     })
     # The MJPEG stream never ends by itself. Without a deadline, uvicorn would
     # wait for every watching browser on shutdown, and a SIGKILL after that

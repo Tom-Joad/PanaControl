@@ -51,6 +51,12 @@ and updates the document; assumptions don't replace measurements.
 
 ## Pitfalls that have cost time before
 
+Listing and downloading need **playback**, the live view and recording need
+**record mode**. The cards view (`Controller.media_open`) therefore excludes
+both, and nothing may send `playmode` or `recmode` while a recording runs.
+One thread does all traffic to the camera's media ports: whether it serves
+two files at once is unmeasured.
+
 The camera holds **exactly one** remote session. An aborted process leaves it
 occupied, after which the camera answers every command with `err_busy` until
 it is switched off and on. A clean shutdown is not a nicety but a
