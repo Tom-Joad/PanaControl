@@ -111,13 +111,13 @@ On 2026-11-22 the listing, the download of a MOV clip, `Range` and
 card's contents" in `protocol.md`. The sequence above held, with two
 differences: the DC-GH6 names no folders in the capability reply, everything
 is listed below `ObjectID` `0`, and MOV clips can be fetched although the
-app's own table forbids the app to copy them.
+app's own table forbids the app to copy them. The listing shows one card
+slot at a time; `setsetting&type=current_sd` changes it.
 
 Still to be measured:
 
 * Photos: which `<res>` kinds JPEG and RAW carry, and whether RAW needs
   `raw_img_send`.
-* Whether `ObjectID` `0` covers both card slots (CFexpress and SD).
 * A complete download of a large clip: does the session survive it without
   `getstate`, and what does the camera do when recording is asked for
   meanwhile?

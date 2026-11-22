@@ -413,6 +413,29 @@ class AppProbe(Probe):
         self.report["jpeg_offsets"] = dict(getattr(self, "_offsets", {}))
         super().finish()
 
+    def run_manual(self, wait: float) -> int:
+        """Only the two recordings that need a hand on the camera."""
+        self.outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.step_describe()
+            self.step_subscribe()
+            if not self.step_connect():
+                return 1
+            if not self.step_settle():
+                return 1
+            self.step_stream()
+            print("\n[A] Recording started by command, stopped on the camera")
+            self.recording("stopped_on_camera", True, False, wait)
+            print("\n[B] Recording started on the camera, stopped by command")
+            self.recording("started_on_camera", False, True, wait)
+            self._receiving = False
+            return 0
+        finally:
+            if state_fields(self.raw(mode="getstate")).get("rec") == "on":
+                print("      a recording is still running: stopping it")
+                self.raw(mode="camcmd", value="video_recstop")
+            self.finish()
+
     def run_all(self, wait: float) -> int:
         self.outdir.mkdir(parents=True, exist_ok=True)
         try:
@@ -449,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=49199, help="local UDP port")
     parser.add_argument("--wait", type=float, default=90.0,
                         help="seconds to wait for a start or stop on the camera")
+    parser.add_argument("--manual-only", action="store_true",
+                        help="only the two recordings stopped and started on the camera")
     parser.add_argument("--outdir", type=pathlib.Path,
                         default=pathlib.Path("out/appprobe"))
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -459,7 +484,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)-7s %(name)s: %(message)s",
     )
     try:
-        return AppProbe(args.ip, args.name, args.port, args.outdir, 50, 1).run_all(args.wait)
+        probe = AppProbe(args.ip, args.name, args.port, args.outdir, 50, 1)
+        return probe.run_manual(args.wait) if args.manual_only else probe.run_all(args.wait)
     except LumixError as exc:
         print(f"\nFailed: {exc}", file=sys.stderr)
         return 1
