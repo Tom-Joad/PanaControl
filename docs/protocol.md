@@ -12,9 +12,9 @@ The camera runs two services:
 | 60606 | UPnP/DLNA | Device description, media access |
 | 80 | `cam.cgi` | Control and stream control |
 
-Media access is not used so far. What the phone app does there is collected,
-unverified, in [`media-transfer.md`](media-transfer.md); what else the app does
-differently (events, more state fields, the datagram layout) is in
+Files are served from a third port, 50001; see "Listing and downloading the
+card's contents". What the phone app does beyond that and is not yet measured
+is in [`media-transfer.md`](media-transfer.md) and
 [`phone-app-notes.md`](phone-app-notes.md).
 
 Control commands are plain HTTP GETs with query parameters. The reply is
@@ -200,7 +200,11 @@ hint at `cammode`. Cross-checked: 25 s of listening on the UDP port after a
 clean `startstream` in playback gave zero packets.
 
 Not accepted: `camcmd&value=rec_mode` and `setsetting&type=cammode` (both
-`err_param`), and `camcmd&value=playmode`.
+`err_param`).
+
+`camcmd&value=playmode` is answered with `ok` while the camera is in playback
+(measured 2026-11-22, ten seconds after the registration). An earlier attempt
+was noted as not accepted; under which conditions is no longer known.
 
 Further options from others' reverse engineering, not used so far:
 `setsetting&type=focusmode` with `afs`/`aff`/`afc`, and
@@ -316,6 +320,16 @@ Every datagram holds a complete JPEG with a proprietary header in front. Its
 length varies, see the measurements. The JPEG start is found by the SOI
 marker `FF D8 FF`.
 
+The header starts with 32 fixed bytes, all numbers big-endian: the length of
+the datagram at offset 0, a running number at offset 4, the camera's MAC
+address at offset 9, and at offset 30 the length of the information block
+that follows. The JPEG then starts at `32 + (u16 at offset 30)`. Measured on
+30 datagrams in a row: the information block was 292 bytes each time, its
+first two bytes were `00 0c`, and the computed start matched the SOI marker
+in all 30. Only the offset 324 occurred in that run, so the formula is not
+yet confirmed for the other two header lengths; the receiver keeps searching
+for the marker.
+
 ## Measurements
 
 Sixty seconds of continuous operation, WLAN in the 5 GHz band:
@@ -346,6 +360,125 @@ receiver.** Address translation has to reassemble fragmented datagrams first,
 and that is exactly where they get lost under load. In a container this means
 an own address on the LAN (macvlan/ipvlan) or host networking instead of
 bridge with port mapping.
+
+## The state query
+
+`getstate` on the DC-GH6 returns these fields (2026-11-22, record mode, no
+recording running):
+
+`batt`, `batt_per`, `rec`, `cammode`, `video_remaincapacity`,
+`remaincapacity`, `sdcardstatus`, `sd_memory`, `version`, `temperature`,
+`burst_interval_status`, `sd_access`, `rem_disp_typ`, `progress_time`,
+`operate`, `stop_motion_num`, `stop_motion`, `lens`, `interval_status`,
+`sdi_state`, `sd2_cardstatus`, `sd2_memory`, `sd2_access`, `current_sd`,
+`backupmode`, `batt_grip`, `batt_per_grip`, `warn_disp`, `cinelike`,
+`slotfunc`, `sd_usage_rate`, `sd_full`, `sd2_full`, `mf_guide`,
+`interval_remain_num`, `interval_end_time`, `video_priority_disp`,
+`lc_state`, `lc_expo_time`, `lc_shoot_num`, `lc_elapsed_sec`, `hrs_num`,
+`hrs_state`, `bt_auto_trans`, `usb_ssd`.
+
+Values seen: `temperature` `low`, `warn_disp` `no_disp`, `current_sd` `sd1`,
+`slotfunc` `relay2_1`, `sdcardstatus` and `sd2_cardstatus` `write_enable`,
+`sd_full` and `sd2_full` `false`, `progress_time` `0`, `batt` `5/5` with
+`batt_per` `-1`. What `progress_time` counts during a recording and which
+other values `temperature` and `warn_disp` take is unmeasured.
+
+## Events
+
+The camera accepts a UPnP event subscription and then reports changes by
+itself:
+
+```
+SUBSCRIBE http://<cam>:60606/Server0/CMS_event
+CALLBACK: <http://<own address>:<port>/Camera/event>
+NT: upnp:event
+TIMEOUT: Second-300
+```
+
+The address is the `eventSubURL` of the `ConnectionManager` service in the
+device description. The reply is `HTTP 200` with a `SID` and
+`TIMEOUT: Second-300`. No session is needed: the subscription was made before
+the registration. `UNSUBSCRIBE` with the `SID` ends it.
+
+The camera then sends `NOTIFY` requests to the callback address. The first
+one comes at once and carries the standard `SourceProtocolInfo`. Later ones
+look like this:
+
+```xml
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+  <e:property><X_Panasonic_Cam_Sync>lens_Atta</X_Panasonic_Cam_Sync></e:property>
+</e:propertyset>
+```
+
+Measured: `X_Panasonic_Cam_Sync` = `lens_Atta` arrived right after `recmode`
+was acknowledged. No event came for the camera's own change to playback
+after the registration or for `playmode`. Events for a recording
+(`X_Panasonic_Cam_VRec`, see `phone-app-notes.md`) are unmeasured: no
+recording was made in that run.
+
+## Listing and downloading the card's contents
+
+Measured on 2026-11-22 with `python3 -m lumixremote.mediaprobe`; the cards
+held three MOV clips.
+
+The camera must be in playback (`cammode` = `play`), which it is by itself
+shortly after the registration.
+
+```
+GET /cam.cgi?mode=get_content_info
+-> <current_position>0</current_position>
+   <total_content_number>3</total_content_number>
+   <content_number>3</content_number>
+```
+
+The listing is a UPnP `Browse` on `ObjectID` `0`:
+
+```
+POST http://<cam>:60606/Server0/CDS_control
+Content-Type: text/xml; charset="utf-8"
+SOAPAction: urn:schemas-upnp-org:service:ContentDirectory:1#Browse
+```
+
+with the request body shown in `media-transfer.md`. It needs no session
+header. The reply names `NumberReturned` and `TotalMatches` and holds an
+escaped DIDL-Lite document. All three clips came as `<item>` directly below
+`0`, without folders. Whether `0` covers both card slots is unmeasured.
+
+Per item: `id`, `dc:title` (folder and file number, like `123-0001`),
+`upnp:class` and three `<res>` entries, each with an address on port 50001
+and a `size` attribute:
+
+| `PANASONIC.COM_PN` | Address | Content |
+|---|---|---|
+| `CAM_AVC_MOV_ORG` | `/DO<id>.MOV` | the clip itself, with `duration`, `size` and `OriginalFileName` |
+| `CAM_TN` | `/DT<id>.JPG` | thumbnail, 160x120 |
+| `CAM_LRGTN` | `/DL<id>.JPG` | large preview |
+
+The `size` of the two pictures is a placeholder (5000 and 100000); the
+thumbnail really had 9021 bytes.
+
+`getinfo&type=capability` names no folders with an `object_id` on this
+model, apart from one for the automatic upload. It does carry a table
+(`contents_action_info`) of what the phone app may do per kind of file; for
+`CAM_AVC_MOV_ORG` it says `copy_to_sp enable="no"`. That only binds the app:
+
+**MOV clips can be downloaded.** A GET of the `<res>` address with the
+`X-SESSION_ID` header returned `HTTP 200` and the header `X-FILE_SIZE` with
+the full size (about 824 MB). The first 32 MB arrived at 45.5 Mbit/s over
+WLAN; the transfer was then cut off by closing the connection, which the
+camera took without trouble: `recmode`, the state query and the live view
+worked right afterwards.
+
+**`Range` works.** `Range: bytes=0-1023` returned `HTTP 206` with
+`Content-Range: bytes 0-1023/<size>`, for the thumbnail and for the clip. So
+a broken download can be resumed.
+
+At that rate a large clip takes long: one of the three had 178 GB, which is
+almost nine hours.
+
+Unmeasured: photos (JPEG and RAW), MP4 clips, a complete download of a large
+file, whether the session survives it, and what happens when a second file
+is fetched at the same time.
 
 ## Known failure patterns
 
