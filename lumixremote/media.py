@@ -207,6 +207,8 @@ class MediaItem:
     state: str = ""
     done: int = 0
     error: str = ""
+    # The revision in which this item last changed for the interface.
+    rev: int = 0
 
     @property
     def size(self) -> int:
@@ -301,17 +303,18 @@ class MediaManager:
         # ends, and nothing new starts.
         self._closed = False
         self._working = False
-        # Counts every change of the list the interface shows (not the
-        # progress of a download), so a poll can skip the unchanged list.
+        # Counts every change the interface has to show (not the progress of
+        # a download). Each item remembers the revision of its last change,
+        # so a poll gets only the items that changed since the one it knows;
+        # `_list_rev` is the last revision in which the list itself changed.
         self._rev = 0
+        self._list_rev = 0
         # Counts the resets, so a listing that was under way during one
         # knows that its result is nobody's any more.
         self._generation = 0
         self._folder_checked = 0.0
         self._folder_state: tuple[str, int | None] = ("", None)
         self._thumbs: dict[str, bytes] = {}
-        # Previews fetched in the last seconds, for the polls in between.
-        self._thumbs_new: deque[tuple[float, str]] = deque(maxlen=256)
         # The slot this thread last made active; None when unknown.
         self._slot: str | None = None
         self._rate: deque[tuple[float, int]] = deque(maxlen=64)
@@ -362,7 +365,13 @@ class MediaManager:
         self._thumbs = {}
         self._slot = None
         self._rev += 1
+        self._list_rev = self._rev
         self._generation += 1
+
+    def _changed_locked(self, item: MediaItem) -> None:
+        """Note that an item looks different now."""
+        self._rev += 1
+        item.rev = self._rev
 
     def enqueue(self, ids: list[str] | None) -> int:
         """Queue the given items, or all that are not done yet. Returns how many."""
@@ -379,9 +388,9 @@ class MediaManager:
                 if item is None or item.state in ("queued", "active", "done"):
                     continue
                 item.state, item.error = "queued", ""
+                self._changed_locked(item)
                 self._queue.append(item_id)
                 added += 1
-            self._rev += 1
             self._cond.notify_all()
             return added
 
@@ -396,8 +405,8 @@ class MediaManager:
             item = self._items.get(item_id)
             if item and item.state == "queued":
                 item.state = ""
+                self._changed_locked(item)
         self._queue.clear()
-        self._rev += 1
 
     def thumbnail(self, item_id: str) -> bytes | None:
         with self._cond:
@@ -425,25 +434,30 @@ class MediaManager:
         return self._folder_state
 
     def snapshot(self, known_rev: int | None = None) -> dict:
-        """The state for the interface. With `known_rev` equal to the current
-        revision the list is left out: a card can hold thousands of files,
-        and during a download only the progress changes."""
+        """The state for the interface. `known_rev` is the revision of the
+        reply the caller already has: it then gets `changed`, only the items
+        that look different since, instead of the whole list in `items`. A
+        card can hold thousands of files, and a download changes one."""
         problem, free = self._folder()
-        with self._cond:
-            items = None
-            if known_rev != self._rev:
-                items = [{
-                    "id": i.id, "name": i.name, "title": i.title, "size": i.size,
+
+        def row(i: MediaItem) -> dict:
+            return {"id": i.id, "name": i.name, "title": i.title, "size": i.size,
                     "duration": i.duration, "video": i.video, "state": i.state,
-                    "slot": i.slot,
-                    "done": i.done, "error": i.error, "thumb": bool(self._thumbs.get(i.id)),
-                } for i in self._items.values()]
+                    "slot": i.slot, "done": i.done, "error": i.error,
+                    "thumb": bool(self._thumbs.get(i.id))}
+
+        with self._cond:
+            items = changed = None
+            if known_rev is None or not self._list_rev <= known_rev <= self._rev:
+                items = [row(i) for i in self._items.values()]
+            else:
+                changed = [row(i) for i in self._items.values() if i.rev > known_rev]
             pending = [i for i in self._items.values() if i.state in ("queued", "active")]
             remaining = sum(max(i.size - i.done, 0) for i in pending)
             rate = self._rate_locked()
             return {
                 "rev": self._rev,
-                "thumbs": [i for t, i in self._thumbs_new if time.monotonic() - t < 10.0],
+                "changed": changed,
                 "progress": {i.id: i.done for i in pending if i.state == "active"},
                 "queued_size": sum(i.size for i in pending),
                 "wanted": self.session.media_wanted,
@@ -565,6 +579,7 @@ class MediaManager:
                 self._items = items
                 self._listed = True
                 self._rev += 1
+                self._list_rev = self._rev
                 # Kept across a refresh; a thumbnail that failed is asked again.
                 self._thumbs = {k: v for k, v in self._thumbs.items() if k in items and v}
         if error:
@@ -630,10 +645,7 @@ class MediaManager:
                 # An empty entry keeps a broken thumbnail from being asked
                 # again before the next refresh.
                 self._thumbs[item.id] = data
-                # Not a new revision: with thousands of files every preview
-                # would send the whole list again. A poll names the new ones.
-                if data:
-                    self._thumbs_new.append((time.monotonic(), item.id))
+                self._changed_locked(item)
 
     # -- download --
 
@@ -647,7 +659,7 @@ class MediaManager:
             item.state, item.done, item.error = "active", 0, ""
             self._cancel = False
             self._rate.clear()
-            self._rev += 1
+            self._changed_locked(item)
         started = time.monotonic()
         try:
             base = 0
@@ -656,19 +668,19 @@ class MediaManager:
                 base += file.size
             with self._cond:
                 item.state, item.done = "done", item.size
-                self._rev += 1
+                self._changed_locked(item)
             log.info("media_downloaded", extra={
                 "file": item.name, "bytes": item.size,
                 "seconds": round(time.monotonic() - started)})
         except Cancelled:
             with self._cond:
                 item.state = ""
-                self._rev += 1
+                self._changed_locked(item)
             log.info("media_download_cancelled", extra={"file": item.name})
         except (LumixError, OSError) as exc:
             with self._cond:
                 item.state, item.error = "failed", str(exc)
-                self._rev += 1
+                self._changed_locked(item)
                 if not isinstance(exc, NoSpace):
                     # What comes next would fail the same way.
                     self._cancel_locked()
@@ -756,7 +768,7 @@ class MediaManager:
                     "file": file.name, "listed": file.size, "actual": actual})
                 with self._cond:
                     file.size = actual
-                    self._rev += 1
+                    self._changed_locked(item)
             if offset and r.status_code == 200:
                 offset = 0      # the camera ignored Range: start over
             elif offset and (r.status_code != 206 or not r.headers.get(

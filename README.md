@@ -266,7 +266,7 @@ the camera.
 | `POST /api/setting` | Set `iso`, `shtrspeed_angle`, `whitebalance` or `exposure`, JSON `{"name": "exposure", "value": "1/3"}`; returns the value adopted |
 | `POST /api/focus` | Move the focus a step, JSON `{"direction": "near"}` or `"far"`; returns the lens position |
 | `POST /api/touch` | Touch focus at a point of the picture, JSON `{"x": 500, "y": 500}`, 0 to 1000 each way |
-| `GET /api/media` | The cards' contents, the download queue and its progress; with `?rev=<rev of the last reply>` the list is left out while unchanged |
+| `GET /api/media` | The cards' contents, the download queue and its progress; with `?rev=<rev of the last reply>` only the files that changed since come, in `changed` |
 | `POST /api/media/open`, `/close` | Open the cards (camera to playback) and close them again |
 | `POST /api/media/download` | Queue files, JSON `{"ids": ["..."]}` or `{"all": true}` |
 | `POST /api/media/cancel` | Stop the running download and empty the queue |

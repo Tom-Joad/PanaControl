@@ -23,9 +23,6 @@
     height: 100%;
     overscroll-behavior: none;
   }
-  /* Where the bar is taller than the screen leaves room for (a phone held
-     upright), the page scrolls; the ground stays ink all the way down. */
-  html { background: var(--surface-ink); }
 
   body {
     display: flex;
@@ -143,13 +140,6 @@
   }
   .reading .value { white-space: nowrap; }
 
-  /* Readings and controls move to the right only where the whole bar fits
-     on one line (up to about 1360px with the longest state text). Narrower,
-     the bar wraps and every row starts at the left edge. */
-  @media (min-width: 1400px) {
-    .readings { margin-left: auto; }
-  }
-
   /* ---- Focus: steps and touch --------------------------------------- */
   /* Its own group: these move the lens, the buttons next to it don't. */
 
@@ -166,7 +156,8 @@
   }
   /* Touch focus is a switch. Off, a tap on the picture does nothing; on,
      the button is filled and the picture shows a crosshair cursor. */
-  #touch[aria-pressed="true"] {
+  #touch[aria-pressed="true"],
+  #more[aria-expanded="true"] {
     background: var(--text-on-ink);
     color: var(--surface-ink);
     border-color: var(--text-on-ink);
@@ -187,11 +178,6 @@
   /* The bar shows what every take needs: ISO, shutter, battery, remaining
      time and the controls. The rest waits behind More (owner, 2026-11-22). */
   body:not(.more) .extra { display: none; }
-  #more[aria-expanded="true"] {
-    background: var(--text-on-ink);
-    color: var(--surface-ink);
-    border-color: var(--text-on-ink);
-  }
 
   /* ---- Controls ------------------------------------------------------ */
 
@@ -218,12 +204,12 @@
   main {
     position: relative;
     flex: 1;
-    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    /* Never squeezed away by a tall bar: the page scrolls instead. */
+    /* Never squeezed away by a tall bar (a phone held upright, More open):
+       the page scrolls instead. */
     min-height: 240px;
     background: var(--pitch);
     border: var(--stroke-hairline) solid var(--border-on-ink);
@@ -425,8 +411,8 @@
     white-space: nowrap;
     touch-action: manipulation;
   }
-  #media-list #media-empty {
-    display: block;
+  #media-empty {
+    display: none;
     padding: var(--space-24);
     color: var(--text-on-ink-muted);
     text-align: center;
@@ -558,19 +544,19 @@
 
   <label class="field">
     <span>ISO</span>
-    <select id="iso" data-setting="iso" disabled><option>--</option></select>
+    <select data-setting="iso" disabled><option>--</option></select>
   </label>
   <label class="field">
     <span>Shutter</span>
-    <select id="set-shutter" data-setting="shtrspeed_angle" disabled><option>--</option></select>
+    <select data-setting="shtrspeed_angle" disabled><option>--</option></select>
   </label>
   <label class="field extra">
     <span>EV</span>
-    <select id="set-exposure" data-setting="exposure" disabled><option>--</option></select>
+    <select data-setting="exposure" disabled><option>--</option></select>
   </label>
   <label class="field extra">
     <span>White balance</span>
-    <select id="set-whitebalance" data-setting="whitebalance" disabled><option>--</option></select>
+    <select data-setting="whitebalance" disabled><option>--</option></select>
   </label>
   <label class="field readonly extra">
     <span>Aperture</span>
@@ -622,6 +608,7 @@
     </div>
     <div id="media-note" role="status"></div>
     <div id="media-total"><span id="media-total-text"></span><div class="bar"><i id="media-total-bar"></i></div></div>
+    <div id="media-empty">The cards hold no files.</div>
     <ul id="media-list"></ul>
   </section>
   <div id="notice" role="status">
@@ -954,8 +941,8 @@ function setTouch(on) {
 el("more").addEventListener("click", (ev) => {
   const open = !body.classList.contains("more");
   body.classList.toggle("more", open);
-  // The switch for touch focus is hidden now: nothing may stay armed that
-  // the bar no longer shows.
+  // Closing More takes the switch for touch focus away, so it goes off:
+  // a tap must not move the focus with nothing in the bar saying it would.
   if (!open && touchOn) setTouch(false);
   ev.currentTarget.setAttribute("aria-expanded", open ? "true" : "false");
   ev.currentTarget.blur();
@@ -1101,7 +1088,6 @@ let mediaTimer = null;
 let mediaRev = null;        // revision of the list held in mediaItems
 let mediaItems = [];
 let mediaRows = new Map();  // id -> the row's nodes and what they show
-let mediaListed = false;
 
 function setMedia(open) {
   if (open === mediaOpen) return;
@@ -1114,7 +1100,6 @@ function setMedia(open) {
     mediaRev = null;
     mediaItems = [];
     mediaRows = new Map();
-    mediaListed = false;
     el("media-list").innerHTML = "";
     pollMedia();
   } else {
@@ -1122,9 +1107,9 @@ function setMedia(open) {
   }
 }
 
-// One poll after the other, never two at once. The list itself only comes
-// when it changed: a card can hold thousands of files, and during a download
-// only the progress moves. Nothing is fetched for a tab nobody looks at.
+// One poll after the other, never two at once. After the first reply only
+// the files that changed come: a card can hold thousands, and a download
+// changes one. Nothing is fetched for a tab nobody looks at.
 async function pollMedia() {
   clearTimeout(mediaTimer);
   mediaTimer = null;
@@ -1139,10 +1124,7 @@ async function pollMedia() {
   if (mediaOpen && !mediaTimer) mediaTimer = setTimeout(pollMedia, 1000);
 }
 document.addEventListener("visibilitychange", () => {
-  if (!mediaOpen || document.hidden) return;
-  // What changed while nobody looked is not in the short replies.
-  mediaRev = null;
-  pollMedia();
+  if (mediaOpen && !document.hidden) pollMedia();
 });
 
 function fmtSize(n) {
@@ -1162,8 +1144,11 @@ function fmtDuration(seconds) {
 function renderMedia(m) {
   if (m.items) {
     mediaItems = m.items;
-    mediaRev = m.rev;
+  } else {
+    const byId = new Map((m.changed || []).map((i) => [i.id, i]));
+    if (byId.size) mediaItems = mediaItems.map((i) => byId.get(i.id) || i);
   }
+  mediaRev = m.rev;
   const items = mediaItems;
   const total = items.reduce((sum, i) => sum + i.size, 0);
   const done = items.filter((i) => i.state === "done").length;
@@ -1195,38 +1180,30 @@ function renderMedia(m) {
       (m.queued_size ? 100 * (m.queued_size - m.remaining) / m.queued_size : 0).toFixed(1) + "%";
   }
 
-  if (m.items) buildRows(items, m.listed);
-  const thumbs = new Set(m.thumbs || []);
+  el("media-empty").style.display = m.listed && !items.length ? "block" : "none";
+  if (m.items) buildRows(items);
   for (const item of items) {
     const progress = (m.progress || {})[item.id];
     if (progress != null) item.done = progress;
-    if (thumbs.has(item.id)) item.thumb = true;
     renderRow(item, !!m.folder_problem);
   }
 }
 
 // The rows are rebuilt only when the list of files changed, so a button
 // under the finger stays where it is.
-function buildRows(items, listed) {
+function buildRows(items) {
   const ids = items.map((i) => i.id);
-  if (listed === mediaListed && ids.length === mediaRows.size
-      && ids.every((id) => mediaRows.has(id))) return;
-  mediaListed = listed;
+  if (ids.length === mediaRows.size && ids.every((id) => mediaRows.has(id))) return;
   const list = el("media-list");
   list.innerHTML = "";
   mediaRows = new Map();
-  if (listed && !items.length) {
-    const empty = document.createElement("li");
-    empty.id = "media-empty";
-    empty.textContent = "The cards hold no files.";
-    list.appendChild(empty);
-  }
   for (const item of items) {
     const li = document.createElement("li");
     li.dataset.id = item.id;
     const img = document.createElement("img");
     img.className = "thumb";
     img.alt = "";
+    img.loading = "lazy";   // fetched when scrolled to, not all at once
     const text = document.createElement("div");
     const name = document.createElement("div");
     name.className = "name";

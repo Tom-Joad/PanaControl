@@ -1821,11 +1821,17 @@ def test_the_list_is_left_out_of_a_poll_while_it_is_unchanged(card):
     _wait(lambda: manager.snapshot()["listed"] and _item(manager)["thumb"])
     first = manager.snapshot()
     again = manager.snapshot(first["rev"])
-    assert again["items"] is None and again["rev"] == first["rev"]
-    # The preview that just arrived is named instead of sending the list again.
-    assert again["thumbs"] == ["0110001"]
+    assert again["items"] is None and again["changed"] == [] and again["rev"] == first["rev"]
+    # A change to one file sends that file, not the list again.
     manager.enqueue(None)
-    assert manager.snapshot(first["rev"])["items"] is not None
+    later = manager.snapshot(first["rev"])
+    assert later["items"] is None
+    assert [i["id"] for i in later["changed"]] == ["0110001"]
+    # A caller that knows nothing, or a revision the list has moved past or
+    # never reached, gets the whole list.
+    assert manager.snapshot()["items"] is not None
+    assert manager.snapshot(0)["items"] is not None
+    assert manager.snapshot(10 ** 6)["items"] is not None
 
 
 def test_commands_for_record_mode_are_refused_while_the_cards_are_open(viewer):
