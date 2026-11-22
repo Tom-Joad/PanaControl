@@ -341,6 +341,36 @@ class Camera:
         """The header that marks a request as part of the remote session."""
         return self._headers()
 
+    def touch_focus(self, x: int, y: int) -> None:
+        """Touch focus at a point; both coordinates run from 0 to 1000.
+
+        Sent as a tap, down and up again: a second `on` without the `off` in
+        between was refused with err_reject on the device.
+        """
+        self._require_session()
+        self._get_xml(mode="camctrl", type="touch", value=f"{x}/{y}", value2="on")
+        self._get_xml(mode="camctrl", type="touch", value="0/0", value2="off")
+
+    def focus_step(self, nearer: bool) -> str:
+        """Move the focus one step and return the reply, which carries the
+        lens position: `ok,<position>,<maximum>,...`.
+
+        `wide` is nearer and `tele` farther: on the device the position rose
+        with `wide-normal`, and the scale in the reply puts short distances
+        at high positions.
+        """
+        self._require_session()
+        value = "wide-normal" if nearer else "tele-normal"
+        text = self._get_raw(mode="camctrl", type="focus", value=value)
+        if not text.startswith("ok"):
+            try:
+                reply = ET.fromstring(text).findtext("result", default="")
+            except ET.ParseError:
+                reply = ""
+            raise LumixError(f"camera refused the focus step: {reply or text[:40]!r}",
+                             reply=reply)
+        return text
+
     def autofocus(self) -> None:
         self._require_session()
         self._get_xml(mode="camcmd", value="oneshot_af")

@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import ipaddress
 import logging
+import math
 import os
 import pathlib
 import threading
@@ -218,11 +219,11 @@ def aperture_from_header(header: bytes, anchor: bytes) -> str:
     return av_to_fnumber(int.from_bytes(header[pos + 8:pos + 10], "big"))
 
 
-def iso_values_from_menu(allmenu: str) -> list[str]:
-    """Extract the allowed ISO values from the camera's menu definition.
+def values_from_menu(allmenu: str, name: str) -> list[str]:
+    """Extract the allowed values of a setting from the camera's menu definition.
 
     The camera supplies the list itself, so the interface has nothing to guess
-    and other models are covered too. Duplicates occur: the same sensitivity
+    and other models are covered too. Duplicates occur: the same value
     appears in several menu contexts.
     """
     try:
@@ -231,11 +232,67 @@ def iso_values_from_menu(allmenu: str) -> list[str]:
         return []
     seen: dict[str, None] = {}
     for item in root.iter("item"):
-        if item.get("cmd_type") == "iso" and item.get("cmd_mode") == "setsetting":
+        if item.get("cmd_type") == name and item.get("cmd_mode") == "setsetting":
             value = item.get("cmd_value")
-            if value:
+            if value and value != "__value__":
                 seen.setdefault(value, None)
     return list(seen)
+
+
+def iso_values_from_menu(allmenu: str) -> list[str]:
+    return values_from_menu(allmenu, "iso")
+
+
+# Shutter speeds offered in the interface. The camera publishes no list for
+# them (see docs/protocol.md), so this is the usual series in third stops,
+# as Tv in steps of 1/256. The camera snaps to what it allows; the value is
+# read back after every change.
+SHUTTER_TIMES = (
+    8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500,
+    400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10,
+    8, 6, 5, 4, 3, 2.5, 2,
+)
+
+
+def shutter_values() -> list[str]:
+    """Tv for each time of the series: 1/8000 is 13, each entry a third less.
+
+    The camera counts in thirds and rounds them up: its 1/20 s reads
+    `1110/256`, which is 4 + 86/256, and 1/60 s is `1536/256`.
+    """
+    return [f"{math.ceil(256 * (39 - index) / 3)}/256" for index in range(len(SHUTTER_TIMES))]
+
+
+def focus_from_reply(reply: str) -> dict | None:
+    """Lens position from the reply to a focus step.
+
+    `ok,<position>,<maximum>,<?>,<?>,<?>,<mm>/<position>,...`: the pairs at
+    the end are the lens's distance scale. The distance is interpolated from
+    it and is an estimate, like the scale on a lens barrel.
+    """
+    parts = [p.strip() for p in reply.split(",")]
+    try:
+        position, maximum = int(parts[1]), int(parts[2])
+    except (IndexError, ValueError):
+        return None
+    scale: list[tuple[int, int]] = []       # (position, millimetres)
+    for part in parts[3:]:
+        if "/" in part:
+            try:
+                mm, pos = (int(v) for v in part.split("/", 1))
+            except ValueError:
+                continue
+            if mm > 0 and pos > 0:
+                scale.append((pos, mm))
+    scale.sort()
+    distance = None
+    for (p0, d0), (p1, d1) in zip(scale, scale[1:]):
+        if p0 <= position <= p1:
+            # Distances halve from mark to mark, so interpolate in the log.
+            share = (position - p0) / (p1 - p0)
+            distance = round(d0 * (d1 / d0) ** share)
+            break
+    return {"position": position, "max": maximum, "distance_mm": distance}
 
 
 # ---------------------------------------------------------------------- #
@@ -307,6 +364,9 @@ class Controller:
         "err_CrFold": "No folder could be created on the card",
     }
 
+    # Settings of the bar besides ISO, each set and read back on the device.
+    BAR_SETTINGS = ("whitebalance", "exposure", "shtrspeed")
+
     # The media view needs playback. Gap between two playmode attempts.
     PLAYMODE_RETRY = 8.0
 
@@ -360,6 +420,14 @@ class Controller:
         self._iso = ""
         self._focusmode = ""
         self._iso_values: list[str] = []
+        # The other settings of the bar: current value and what may be chosen.
+        self._settings: dict[str, str] = {}
+        self._setting_values: dict[str, list[str]] = {"shtrspeed": shutter_values()}
+        # Lens position, known only after a focus step: the camera has no
+        # call that just reads it.
+        self._focus: dict | None = None
+        # The card slot that was active when the media view was opened.
+        self._media_slot = ""
         self._lens_anchor = b""
         # The last end of a recording that was not asked for here, for the
         # interface: {"code", "text", "at"}; None after the next start.
@@ -615,10 +683,15 @@ class Controller:
             # allmenu is about 380 KB and doesn't change, so a reconnect
             # doesn't pull it over the WLAN again every time.
             try:
-                values = iso_values_from_menu(self.camera.get_info("allmenu"))
+                menu = self.camera.get_info("allmenu")
+                values = iso_values_from_menu(menu)
                 if values:
                     self._iso_values = values
                     log.info("iso_values", extra={"count": len(values)})
+                for name in ("whitebalance", "exposure"):
+                    found = values_from_menu(menu, name)
+                    if found:
+                        self._setting_values[name] = found
             except LumixError as exc:
                 log.info("menu_unreadable", extra={"error": str(exc)})
 
@@ -715,6 +788,14 @@ class Controller:
                     self._set(**{name: self.camera.get_setting(name)})
                 except LumixError as exc:
                     log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
+            for name in self.BAR_SETTINGS:
+                try:
+                    value = self.camera.get_setting(name)
+                except LumixError as exc:
+                    log.debug("setting_unreadable", extra={"setting": name, "error": str(exc)})
+                    continue
+                with self._lock:
+                    self._settings[name] = value
             self._set(status="online", error="")
             return
 
@@ -786,6 +867,8 @@ class Controller:
         if self._recording() or self._rec_wanted:
             raise LumixError("A recording is running: stop it before opening the cards")
         self._media = True
+        with self._lock:
+            self._media_slot = self._state.raw.get("current_sd", "")
         self._last_playmode = 0.0
         self._last_poll = 0.0
         log.info("media_opened")
@@ -794,6 +877,14 @@ class Controller:
         """Close the media view; the camera goes back to record mode."""
         if not self._media:
             return
+        if self._media_slot and self.camera.connected:
+            # Listing the other card changed the active slot; put it back
+            # before the camera returns to record mode.
+            try:
+                if self.camera.get_setting("current_sd") != self._media_slot:
+                    self.camera.set_setting("current_sd", self._media_slot)
+            except LumixError as exc:
+                log.info("slot_not_restored", extra={"error": str(exc)})
         self._media = False
         self._recmode_tried = False
         self._recmode_error = ""
@@ -989,6 +1080,66 @@ class Controller:
         self._set(iso=actual)
         return actual
 
+    def set_setting(self, name: str, value: str) -> str:
+        """Set one of the bar's settings; returns what the camera adopted.
+
+        As with ISO the camera snaps to what it allows (measured: exposure
+        compensation -5 became -3), so the value is read back.
+        """
+        if name == "iso":
+            return self.set_iso(value)
+        if name not in self.BAR_SETTINGS:
+            raise LumixError(f"{name!r} can't be set here")
+        allowed = self._setting_values.get(name)
+        if allowed and value not in allowed:
+            raise LumixError(f"{value!r} is not available for {name} on this camera")
+        self.camera.set_setting(name, value)
+        time.sleep(0.4)
+        actual = self.camera.get_setting(name)
+        with self._lock:
+            self._settings[name] = actual
+        return actual
+
+    def _require_live(self) -> None:
+        with self._lock:
+            live = self._status == "online"
+        if not live or self._media:
+            raise LumixError("Only possible with the live view running")
+
+    def touch_focus(self, x: int, y: int) -> None:
+        """Touch focus at a point of the picture, 0 to 1000 each way."""
+        self._require_live()
+        self.camera.touch_focus(x, y)
+
+    def focus_step(self, nearer: bool) -> dict:
+        """Move the focus a step; returns the lens position."""
+        self._require_live()
+        focus = focus_from_reply(self.camera.focus_step(nearer))
+        if focus is None:
+            raise LumixError("The camera did not report a lens position")
+        with self._lock:
+            self._focus = focus
+        return focus
+
+    # ------------------------------------------------------------------ #
+    # Card slots, for the media view
+    # ------------------------------------------------------------------ #
+
+    def card_slots(self) -> list[str]:
+        """The slots that hold a card; empty on a camera with one slot."""
+        with self._lock:
+            raw = self._state.raw
+        if "current_sd" not in raw:
+            return []
+        slots = [slot for slot, field in (("sd1", "sd_memory"), ("sd2", "sd2_memory"))
+                 if raw.get(field) == "set"]
+        # The active one first: no change of slot for its listing.
+        return sorted(slots, key=lambda slot: slot != raw.get("current_sd"))
+
+    def select_slot(self, slot: str) -> None:
+        """Make a slot the one that listing and downloads refer to."""
+        self.camera.set_setting("current_sd", slot)
+
 
     # ------------------------------------------------------------------ #
 
@@ -1004,6 +1155,12 @@ class Controller:
         # is carried on rather than frozen at the last answer.
         return counted + max(int(age), 0)
 
+    def snapshot_settings(self) -> dict:
+        with self._lock:
+            return {name: {"value": self._settings.get(name, ""),
+                           "values": self._setting_values.get(name, [])}
+                    for name in self.BAR_SETTINGS}
+
     def snapshot(self) -> dict:
         """Current view of the world, safe to serialise at any time."""
         with self._lock:
@@ -1011,6 +1168,8 @@ class Controller:
             cammode, iso, iso_values = self._cammode, self._iso, self._iso_values
             focusmode = self._focusmode
             anchor = self._lens_anchor
+            focus = self._focus
+        settings = self.snapshot_settings()
         stats = self.stream.stats
         return {
             "version": __version__,
@@ -1020,6 +1179,11 @@ class Controller:
             "iso": iso,
             "iso_values": iso_values,
             "focusmode": focusmode,
+            "settings": settings,
+            # Known only after a focus step from here.
+            "focus": focus,
+            "temperature": state.raw.get("temperature", ""),
+            "card": state.raw.get("current_sd", ""),
             # The aperture is in no query, only in the datagram header. It
             # can therefore be read, but not set.
             "aperture": aperture_from_header(self.stream.latest_header or b"", anchor),
@@ -1255,6 +1419,61 @@ async def set_iso(request: Request) -> dict:
     except LumixError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True, "iso": actual}
+
+
+async def _json_object(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body is not JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body is not an object")
+    return payload
+
+
+@app.post("/api/setting", **COMMAND)
+async def set_setting(request: Request) -> dict:
+    """Set white balance, exposure compensation, shutter speed or ISO.
+
+    Reports the value the camera really adopted.
+    """
+    controller = _controller(request)
+    payload = await _json_object(request)
+    name, value = payload.get("name"), payload.get("value")
+    if not isinstance(name, str) or not isinstance(value, str) or not name or not value:
+        raise HTTPException(status_code=400, detail="Give name and value as text")
+    try:
+        actual = await run_in_threadpool(controller.set_setting, name, value)
+    except LumixError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "name": name, "value": actual}
+
+
+@app.post("/api/touch", **COMMAND)
+async def touch_focus(request: Request) -> dict:
+    """Touch focus at `{"x": 0-1000, "y": 0-1000}` of the picture."""
+    controller = _controller(request)
+    payload = await _json_object(request)
+    x, y = payload.get("x"), payload.get("y")
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 1000
+               for v in (x, y)):
+        raise HTTPException(status_code=400, detail="x and y must be whole numbers from 0 to 1000")
+    return await _command(lambda: controller.touch_focus(x, y))
+
+
+@app.post("/api/focus", **COMMAND)
+async def focus_step(request: Request) -> dict:
+    """Move the focus a step: `{"direction": "near"}` or `"far"`."""
+    controller = _controller(request)
+    payload = await _json_object(request)
+    direction = payload.get("direction")
+    if direction not in ("near", "far"):
+        raise HTTPException(status_code=400, detail='direction must be "near" or "far"')
+    try:
+        focus = await run_in_threadpool(controller.focus_step, direction == "near")
+    except LumixError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "focus": focus}
 
 
 # ---- Media view: the cards' contents and the downloads ------------------- #

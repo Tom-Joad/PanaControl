@@ -198,6 +198,8 @@ class MediaItem:
     id: str
     title: str
     files: list[MediaFile]
+    # Card slot the item is on ("sd1", "sd2"); empty on a one-slot camera.
+    slot: str = ""
     thumb_url: str = ""
     duration: str = ""
     video: bool = False
@@ -252,6 +254,8 @@ class Session(Protocol):
     def media_ready(self) -> bool: ...
     def media_headers(self) -> dict[str, str]: ...
     def content_count(self) -> int: ...
+    def card_slots(self) -> list[str]: ...
+    def select_slot(self, slot: str) -> None: ...
 
 
 class NoSpace(LumixError):
@@ -272,6 +276,9 @@ class MediaManager:
     INDEX_WAIT = 60.0        # for the camera to build its index
     THUMB_CACHE = 2000
     RESERVE = 64 * 1024 * 1024   # free space kept on the target
+    # The listing and the file addresses refer to the active card slot. After
+    # a change the listing was read two seconds later on the device.
+    SLOT_SETTLE = 2.0
 
     def __init__(self, session: Session, camera_ip: str,
                  folder: pathlib.Path | None,
@@ -291,6 +298,8 @@ class MediaManager:
         self._queue: deque[str] = deque()
         self._cancel = False
         self._thumbs: dict[str, bytes] = {}
+        # The slot this thread last made active; None when unknown.
+        self._slot: str | None = None
         self._rate: deque[tuple[float, int]] = deque(maxlen=64)
         self._thread = threading.Thread(target=self._run, name="lumix-media", daemon=True)
         self._thread.start()
@@ -320,6 +329,7 @@ class MediaManager:
             self._list_error = ""
             self._items = {}
             self._thumbs = {}
+            self._slot = None
             self._cond.notify_all()
 
     def enqueue(self, ids: list[str] | None) -> int:
@@ -378,6 +388,7 @@ class MediaManager:
             items = [{
                 "id": i.id, "name": i.name, "title": i.title, "size": i.size,
                 "duration": i.duration, "video": i.video, "state": i.state,
+                "slot": i.slot,
                 "done": i.done, "error": i.error, "thumb": bool(self._thumbs.get(i.id)),
             } for i in self._items.values()]
             pending = [i for i in self._items.values() if i.state in ("queued", "active")]
@@ -443,10 +454,13 @@ class MediaManager:
                 return self._list
         if self._queue:
             return self._download_next
-        for item in self._items.values():
-            if item.thumb_url and item.id not in self._thumbs \
-                    and len(self._thumbs) < self.THUMB_CACHE:
-                return lambda item=item: self._fetch_thumbnail(item)
+        if len(self._thumbs) < self.THUMB_CACHE:
+            missing = [i for i in self._items.values()
+                       if i.thumb_url and i.id not in self._thumbs]
+            # Those on the active slot first: every change of slot costs time.
+            missing.sort(key=lambda i: i.slot != self._slot)
+            if missing:
+                return lambda item=missing[0]: self._fetch_thumbnail(item)
         return None
 
     # -- listing --
@@ -455,22 +469,32 @@ class MediaManager:
         error = ""
         items: dict[str, MediaItem] = {}
         try:
-            total = self._wait_for_index()
-            start = 0
-            while start < total:
-                result = self._browse("0", start, min(self.PAGE, total - start))
-                if not result.entries:
-                    break
-                for entry in result.entries:
-                    item = item_from_entry(entry)
-                    if item is not None:
-                        items[item.id] = item
-                start += len(result.entries)
-                if result.total >= 0:
-                    total = result.total
-            log.info("media_listed", extra={"items": len(items), "of": total})
+            self._slot = None
+            for slot in self.session.card_slots() or [""]:
+                self._use_slot(slot)
+                total = self._wait_for_index()
+                start = 0
+                while start < total:
+                    result = self._browse("0", start, min(self.PAGE, total - start))
+                    if not result.entries:
+                        break
+                    for entry in result.entries:
+                        item = item_from_entry(entry)
+                        if item is not None:
+                            # The same number can exist on both cards.
+                            item.slot = slot
+                            item.id = f"{slot}:{item.id}" if slot else item.id
+                            items[item.id] = item
+                    start += len(result.entries)
+                    if result.total >= 0:
+                        total = result.total
+                log.info("media_listed", extra={"slot": slot or "-", "items": total})
+        except Cancelled:
+            with self._cond:
+                self._listing = False
+            return
         except (LumixError, httpx.HTTPError, ET.ParseError) as exc:
-            error = f"The card could not be listed: {exc}"
+            error = f"The cards could not be listed: {exc}"
             log.warning("media_list_failed", extra={"error": str(exc)})
         self._mark_present(items)
         with self._cond:
@@ -517,14 +541,25 @@ class MediaManager:
         except OSError:
             return False
 
+    def _use_slot(self, slot: str) -> None:
+        """Make the card slot active that the next requests refer to."""
+        if not slot or slot == self._slot:
+            return
+        if self._stop or not self.session.media_wanted:
+            raise Cancelled()
+        self.session.select_slot(slot)
+        time.sleep(self.SLOT_SETTLE)
+        self._slot = slot
+
     def _fetch_thumbnail(self, item: MediaItem) -> None:
         data = b""
         try:
+            self._use_slot(item.slot)
             r = self._http.get(item.thumb_url, headers={
                 "User-Agent": DOWNLOAD_AGENT, **self.session.media_headers()})
             if r.status_code == 200:
                 data = r.content
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, LumixError, Cancelled) as exc:
             log.debug("thumbnail_failed", extra={"error": str(exc)})
         with self._cond:
             # An empty entry keeps a broken thumbnail from being asked again.
@@ -600,6 +635,7 @@ class MediaManager:
                 raise NoSpace(
                     f"not enough space in the download folder for {file.name}")
             try:
+                self._use_slot(item.slot)
                 got = self._fetch(item, file, part, offset, base)
             except httpx.HTTPError as exc:
                 got = part.stat().st_size - offset if part.exists() else 0
@@ -658,6 +694,7 @@ class MediaManager:
 
     def _wait_for_camera(self) -> None:
         """Pause before the next attempt, and until the camera is back."""
+        self._slot = None       # a camera that was away may have changed it
         deadline = time.monotonic() + self.RETRY_WAIT
         while time.monotonic() < deadline or not self.session.media_ready:
             self._check_cancel()

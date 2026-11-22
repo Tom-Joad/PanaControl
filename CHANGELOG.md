@@ -10,7 +10,8 @@ only comes with a new major version.
 ### Added
 - **Download what is on the cards.** The new **Cards** view lists the files
   on the camera's cards with preview picture, length and size and saves
-  single files or all of them into the new `/downloads` folder. An
+  single files or all of them, from both card slots, into the new
+  `/downloads` folder. An
   interrupted download continues where it stopped. The camera is in playback
   meanwhile, so the live view and recording pause until the view is closed.
   To use it, map a folder to `/downloads` (Unraid: the new **Downloads**
@@ -23,6 +24,13 @@ only comes with a new major version.
   the new TCP port `LUMIX_EVENT_PORT` (49198) for this; with an own address
   on the LAN nothing has to be set, with port mapping see the README.
 - **Recording time.** The camera's own counter is shown next to REC.
+- **Shutter speed, exposure compensation and white balance** in the bar,
+  set like ISO and read back from the camera; the camera's temperature state
+  and the active card slot as readings.
+- **Focus steps.** **Far** and **Near** move the focus, with the distance
+  the lens reports.
+- **Touch focus**, behind a switch that is off after every load: only while
+  it is on does a tap on the picture set the focus point.
 - `python3 -m lumixremote.mediaprobe`, a read-only test of listing,
   download, events and state on a real camera, and
   `python3 -m lumixremote.appprobe` for live view, recording and settings.

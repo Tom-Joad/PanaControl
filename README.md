@@ -117,8 +117,35 @@ download folder, **Download all** everything that is not there yet.
   name.
 * Video takes long over WLAN: about 45 Mbit/s were measured on the DC-GH6,
   which is some 20 GB per hour. Keep the camera on power for large clips.
-* Verified on the DC-GH6 with MOV clips. Photos and RAW files go the same
-  way but were not on the cards when this was measured.
+* Both card slots are listed, each file with its card. The camera serves
+  one card at a time, so the app switches the active slot as needed and puts
+  it back when the view is closed.
+* Verified on the DC-GH6 with MOV and MP4 clips. Photos and RAW files go the
+  same way but were not on the cards when this was measured.
+
+### Exposure and focus
+
+**Shutter**, **EV** (exposure compensation) and **White balance** work like
+ISO: the camera supplies the lists for EV and white balance, the shutter
+speeds are the usual series in third stops, and after every change the value
+the camera really adopted is read back and shown. **Temp** and **Card** show
+the camera's temperature state and the active card slot.
+
+**Far** and **Near** move the focus a step; held, they keep moving. The
+reading between them is the distance the lens reports for its position, an
+estimate like the scale on a lens barrel. It is known after the first step,
+because the camera has no call that only reads the position.
+
+**Touch focus** is a switch and off after every load. Only while it is on
+does a tap on the picture set the focus point, so a hand brushing a tablet
+changes nothing. While it is on, the double-tap for full screen rests; the
+corner button and V still switch it.
+
+Verified on the DC-GH6: setting white balance, exposure compensation and
+shutter speed, the focus steps with the position in the reply, and that the
+camera accepts a touch. Not yet looked at: what a touch does to the picture
+with the focus lever on MF, and which shutter speeds the camera refuses in
+which video mode.
 
 ### Recording
 
@@ -233,6 +260,9 @@ the camera.
 | `POST /api/rec/start` | Start recording |
 | `POST /api/rec/stop` | Stop recording |
 | `POST /api/iso` | Set the sensitivity, JSON `{"value": "800"}` |
+| `POST /api/setting` | Set `whitebalance`, `exposure`, `shtrspeed` or `iso`, JSON `{"name": "exposure", "value": "1/3"}`; returns the value adopted |
+| `POST /api/focus` | Move the focus a step, JSON `{"direction": "near"}` or `"far"`; returns the lens position |
+| `POST /api/touch` | Touch focus at a point of the picture, JSON `{"x": 500, "y": 500}`, 0 to 1000 each way |
 | `GET /api/media` | The cards' contents, the download queue and its progress |
 | `POST /api/media/open`, `/close` | Open the cards (camera to playback) and close them again |
 | `POST /api/media/download` | Queue files, JSON `{"ids": ["..."]}` or `{"all": true}` |

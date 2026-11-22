@@ -135,8 +135,10 @@
 
   .readings {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-12);
   }
+  .reading .value { white-space: nowrap; }
 
   /* Readings and controls move to the right only where the whole bar fits
      on one line (up to about 1360px with the longest state text). Narrower,
@@ -144,6 +146,40 @@
   @media (min-width: 1400px) {
     .readings { margin-left: auto; }
   }
+
+  /* ---- Focus: steps and touch --------------------------------------- */
+  /* Its own group: these move the lens, the buttons next to it don't. */
+
+  .focus {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-12);
+  }
+  .focus .btn {
+    min-height: 48px;
+    padding: 0 var(--space-18);
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+  /* Touch focus is a switch. Off, a tap on the picture does nothing; on,
+     the button is filled and the picture shows a crosshair cursor. */
+  #touch[aria-pressed="true"] {
+    background: var(--text-on-ink);
+    color: var(--surface-ink);
+    border-color: var(--text-on-ink);
+  }
+  body.touch-on main { cursor: crosshair; }
+
+  #touch-mark {
+    position: absolute;
+    display: none;
+    width: 56px;
+    height: 56px;
+    margin: -28px 0 0 -28px;
+    border: var(--stroke-accent) solid var(--text-on-ink);
+    pointer-events: none;
+  }
+  #touch-mark.show { display: block; }
 
   /* ---- Controls ------------------------------------------------------ */
 
@@ -283,6 +319,7 @@
   body.media #media { display: flex; }
   body.media #view,
   body.media #overlay,
+  body.media #touch-mark,
   body.media #full { display: none; }
 
   .media-bar {
@@ -479,8 +516,11 @@
 
   /* Narrow window: the controls take their own row and share it. */
   @media (max-width: 760px) {
-    .actions { width: 100%; }
-    .actions .btn { flex: 1; padding: 0 var(--space-6); }
+    .actions, .focus { width: 100%; }
+    .actions .btn, .focus .btn { flex: 1; padding: 0 var(--space-6); }
+    /* The switch gets its own row: it is the one that must not be hit by
+       accident next to the step buttons. */
+    .focus #touch { flex-basis: 100%; }
   }
 </style>
 </head>
@@ -495,6 +535,18 @@
     <span>ISO</span>
     <select id="iso" disabled><option>--</option></select>
   </label>
+  <label class="field">
+    <span>Shutter</span>
+    <select id="set-shtrspeed" data-setting="shtrspeed" disabled><option>--</option></select>
+  </label>
+  <label class="field">
+    <span>EV</span>
+    <select id="set-exposure" data-setting="exposure" disabled><option>--</option></select>
+  </label>
+  <label class="field">
+    <span>White balance</span>
+    <select id="set-whitebalance" data-setting="whitebalance" disabled><option>--</option></select>
+  </label>
   <label class="field readonly">
     <span>Aperture</span>
     <!-- The camera offers no call to set it, see docs/protocol.md. -->
@@ -505,6 +557,15 @@
     <div class="reading"><span>Battery</span><b class="value" id="batt">--</b></div>
     <div class="reading"><span>Remaining</span><b class="value" id="rest">--</b></div>
     <div class="reading"><span>fps</span><b class="value" id="fps">--</b></div>
+    <div class="reading"><span>Temp</span><b class="value" id="temp">--</b></div>
+    <div class="reading"><span>Card</span><b class="value" id="card">--</b></div>
+  </div>
+
+  <div class="focus">
+    <button class="btn btn--on-ink" id="focus-far" type="button" title="Move the focus a step farther; hold to keep moving">Far</button>
+    <div class="reading"><span>Focus</span><b class="value" id="focus-pos">--</b></div>
+    <button class="btn btn--on-ink" id="focus-near" type="button" title="Move the focus a step nearer; hold to keep moving">Near</button>
+    <button class="btn btn--on-ink" id="touch" type="button" aria-pressed="false" title="While on, a tap on the picture sets the focus point">Touch focus off</button>
   </div>
 
   <div class="actions">
@@ -518,6 +579,7 @@
 <main id="stage">
   <img id="view" alt="Live view">
   <div id="rec">REC<span id="rec-time"></span></div>
+  <div id="touch-mark"></div>
   <div id="overlay">
     <div class="title" id="ov-title">No live view</div>
     <div class="hint"  id="ov-hint"></div>
@@ -621,6 +683,10 @@ function render(s, transportError) {
     el("fps").textContent  = "--";
     el("iso").disabled = true;
     el("aperture").textContent = "--";
+    el("temp").textContent = "--";
+    el("card").textContent = "--";
+    for (const sel of document.querySelectorAll("select[data-setting]")) sel.disabled = true;
+    renderFocus(null);
     stage.classList.remove("recording");
     el("notice").classList.remove("show");
     setMedia(false);
@@ -645,6 +711,10 @@ function render(s, transportError) {
   el("batt").textContent = fmtBatt(s.battery);
   el("rest").textContent = fmtRemaining(s.video_remaining);
   el("fps").textContent  = s.status === "online" && !s.stalled ? s.fps.toFixed(1) : "--";
+  el("temp").textContent = s.temperature ? s.temperature.replace(/_/g, " ") : "--";
+  el("card").textContent = s.card ? s.card.replace(/^sd/, "") : "--";
+  renderSettings(s);
+  renderFocus(s);
 
   stage.classList.toggle("recording", !!s.recording);
   el("rec-time").textContent = s.recording && s.rec_seconds != null ? fmtClock(s.rec_seconds) : "";
@@ -734,6 +804,230 @@ function renderExposure(s) {
   sel.disabled = isoBusy || s.status !== "online" || !key;
 
   el("aperture").textContent = s.aperture || "--";
+}
+
+/* ---- Shutter, exposure compensation, white balance ------------------- */
+// Like ISO: the lists come from the status, a set value is read back, and
+// what the camera chose instead is said.
+
+const TIMES = [8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500,
+               400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10,
+               8, 6, 5, 4, 3, 2.5, 2];
+const WB_NAMES = {
+  auto: "AWB", auto_cool: "AWB cool", auto_warm: "AWB warm", daylight: "Daylight",
+  cloudy: "Cloudy", shade: "Shade", halogen: "Incandescent", flash: "Flash"
+};
+
+function tv(value) {
+  const parts = String(value).split("/");
+  return parts.length === 2 ? Number(parts[0]) / Number(parts[1]) : NaN;
+}
+
+const SETTING_LABEL = {
+  shtrspeed(value) {
+    // Tv counts thirds from 1/8000 (13) down; name it by the usual series.
+    const index = Math.round((13 - tv(value)) * 3);
+    return index >= 0 && index < TIMES.length ? "1/" + TIMES[index] : value;
+  },
+  exposure(value) {
+    return (value.startsWith("-") || value === "0" ? "" : "+") + value;
+  },
+  whitebalance(value) {
+    if (WB_NAMES[value]) return WB_NAMES[value];
+    const set = /^white_set(\d)$/.exec(value), temp = /^color_temp(\d)$/.exec(value);
+    return set ? "Set " + set[1] : temp ? "Kelvin " + temp[1] : value;
+  }
+};
+
+const settingBusy = {};
+const settingBuilt = {};
+
+function renderSettings(s) {
+  for (const sel of document.querySelectorAll("select[data-setting]")) {
+    const name = sel.dataset.setting;
+    const setting = (s.settings || {})[name] || { value: "", values: [] };
+    const values = setting.values.slice();
+    // A value the camera reports but the list lacks still has to show.
+    let current = setting.value;
+    if (name === "shtrspeed" && current) {
+      const near = values.find((v) => Math.abs(tv(v) - tv(current)) < 0.02);
+      if (near) current = near;
+    }
+    if (current && !values.includes(current)) values.push(current);
+    const key = values.join(",");
+    if (key && key !== settingBuilt[name]) {
+      settingBuilt[name] = key;
+      sel.innerHTML = "";
+      for (const v of values) {
+        const node = document.createElement("option");
+        node.value = v;
+        node.textContent = SETTING_LABEL[name](v);
+        sel.appendChild(node);
+      }
+    }
+    if (!settingBusy[name] && current && sel.value !== current) sel.value = current;
+    sel.disabled = !!settingBusy[name] || s.status !== "online" || !current;
+  }
+}
+
+for (const sel of document.querySelectorAll("select[data-setting]")) {
+  sel.addEventListener("change", async () => {
+    const name = sel.dataset.setting, value = sel.value;
+    settingBusy[name] = true;
+    sel.disabled = true;
+    try {
+      const r = await fetch("/api/setting", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, value })
+      });
+      const reply = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        flash(reply.detail || ("HTTP " + r.status));
+      } else if (reply.value && SETTING_LABEL[name](reply.value) !== SETTING_LABEL[name](value)) {
+        flash("The camera chose " + SETTING_LABEL[name](reply.value) + " instead of "
+              + SETTING_LABEL[name](value), "Adjusted");
+      }
+    } catch (err) {
+      flash("Not set: " + (err && err.message || err));
+    }
+    settingBusy[name] = false;
+    poll();
+  });
+}
+
+/* ---- Focus steps ---------------------------------------------------- */
+// One step per click; held, the steps repeat. The camera has no call that
+// only reads the lens position, so it is known after the first step.
+
+let focusShown = null;
+let focusTimer = null;
+let focusInFlight = false;
+
+function fmtFocus(f) {
+  if (!f) return "--";
+  if (f.distance_mm) {
+    const m = f.distance_mm / 1000;
+    return "≈ " + (m >= 10 ? m.toFixed(0) : m.toFixed(1)) + " m";
+  }
+  return f.position + " / " + f.max;
+}
+
+function renderFocus(s) {
+  const live = !!s && s.status === "online" && !s.media;
+  el("focus-far").disabled = el("focus-near").disabled = !live;
+  el("touch").disabled = !live;
+  if (!live && touchOn) setTouch(false);
+  if (s && s.focus && !focusInFlight) focusShown = s.focus;
+  el("focus-pos").textContent = fmtFocus(focusShown);
+}
+
+async function focusStep(direction) {
+  if (focusInFlight) return;
+  focusInFlight = true;
+  try {
+    const r = await fetch("/api/focus", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction })
+    });
+    const reply = await r.json().catch(() => ({}));
+    if (r.ok && reply.focus) {
+      focusShown = reply.focus;
+      el("focus-pos").textContent = fmtFocus(focusShown);
+    } else {
+      stopFocus();
+      flash(reply.detail || ("HTTP " + r.status));
+    }
+  } catch (err) {
+    stopFocus();
+    flash("Command not delivered: " + (err && err.message || err));
+  }
+  focusInFlight = false;
+}
+
+function stopFocus() {
+  clearInterval(focusTimer);
+  focusTimer = null;
+}
+
+for (const [id, direction] of [["focus-far", "far"], ["focus-near", "near"]]) {
+  const button = el(id);
+  button.addEventListener("pointerdown", (ev) => {
+    if (button.disabled || ev.button > 0) return;
+    stopFocus();
+    focusStep(direction);
+    focusTimer = setInterval(() => focusStep(direction), 250);
+  });
+  for (const name of ["pointerup", "pointerleave", "pointercancel"]) {
+    button.addEventListener(name, stopFocus);
+  }
+  // Enter or Space on the focused button: one step.
+  button.addEventListener("click", (ev) => { if (ev.detail === 0) focusStep(direction); });
+  button.addEventListener("contextmenu", (ev) => ev.preventDefault());
+}
+
+/* ---- Touch focus ---------------------------------------------------- */
+// Off unless switched on, and off again on every load: on a tablet a hand
+// brushing the picture must not move the focus.
+
+let touchOn = false;
+let touchLast = 0;
+let touchMarkTimer = null;
+
+function setTouch(on) {
+  touchOn = on;
+  body.classList.toggle("touch-on", on);
+  el("touch").setAttribute("aria-pressed", on ? "true" : "false");
+  el("touch").textContent = on ? "Touch focus on" : "Touch focus off";
+}
+
+el("touch").addEventListener("click", (ev) => {
+  ev.currentTarget.blur();
+  setTouch(!touchOn);
+});
+
+// Where on the picture a tap landed, 0 to 1000 each way; null outside it.
+// The picture is letterboxed inside its box (object-fit: contain).
+function picturePoint(ev) {
+  const box = view.getBoundingClientRect();
+  const w = view.naturalWidth, h = view.naturalHeight;
+  if (!w || !h || !box.width || !box.height) return null;
+  const scale = Math.min(box.width / w, box.height / h);
+  const left = box.left + (box.width - w * scale) / 2;
+  const top = box.top + (box.height - h * scale) / 2;
+  const x = (ev.clientX - left) / (w * scale), y = (ev.clientY - top) / (h * scale);
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x: Math.round(x * 1000), y: Math.round(y * 1000) };
+}
+
+async function touchFocus(ev) {
+  const point = picturePoint(ev);
+  // The camera refuses a second touch right after the first.
+  if (!point || ev.timeStamp - touchLast < 1500) return;
+  touchLast = ev.timeStamp;
+  const frame = stage.getBoundingClientRect();
+  const mark = el("touch-mark");
+  mark.style.left = (ev.clientX - frame.left) + "px";
+  mark.style.top = (ev.clientY - frame.top) + "px";
+  mark.classList.add("show");
+  clearTimeout(touchMarkTimer);
+  touchMarkTimer = setTimeout(() => mark.classList.remove("show"), 1500);
+  try {
+    const r = await fetch("/api/touch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(point)
+    });
+    if (!r.ok) {
+      mark.classList.remove("show");
+      const reply = await r.json().catch(() => ({}));
+      flash(reply.detail || ("HTTP " + r.status));
+    }
+  } catch (err) {
+    mark.classList.remove("show");
+    flash("Command not delivered: " + (err && err.message || err));
+  }
 }
 
 el("iso").addEventListener("change", async (ev) => {
@@ -973,6 +1267,7 @@ function renderMedia(m) {
       img.src = "/api/media/thumb/" + encodeURIComponent(item.id);
     }
     const parts = [];
+    if (item.slot) parts.push("Card " + item.slot.replace(/^sd/, ""));
     if (item.duration) parts.push(item.duration);
     parts.push(fmtSize(item.size));
     const percent = item.size ? 100 * item.done / item.size : 0;
@@ -1126,6 +1421,12 @@ el("full").addEventListener("click", (e) => {
 let lastTap = { time: 0, x: 0, y: 0 };
 stage.addEventListener("pointerup", (ev) => {
   if (ev.target.closest("#full") || ev.target.closest("#notice") || mediaOpen) return;
+  if (touchOn) {
+    // A tap is a focus point now, so the double-tap for full screen rests;
+    // the corner button and V still switch it.
+    touchFocus(ev);
+    return;
+  }
   const near = Math.abs(ev.clientX - lastTap.x) < 40 && Math.abs(ev.clientY - lastTap.y) < 40;
   if (ev.timeStamp - lastTap.time < 350 && near) {
     lastTap = { time: 0, x: 0, y: 0 };

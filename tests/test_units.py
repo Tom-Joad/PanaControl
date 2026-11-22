@@ -1237,6 +1237,14 @@ class FakeSession:
     def content_count(self):
         return 1
 
+    slots: list[str] = []
+
+    def card_slots(self):
+        return list(self.slots)
+
+    def select_slot(self, slot):
+        self.selected = getattr(self, "selected", []) + [slot]
+
 
 CLIP = bytes(range(256)) * 40          # 10240 bytes
 
@@ -1670,3 +1678,76 @@ def test_the_event_port_may_be_switched_off(monkeypatch, tmp_path):
     monkeypatch.setenv("LUMIX_EVENT_PORT", "70000")
     with pytest.raises(SystemExit, match="LUMIX_EVENT_PORT"):
         appmod.Config.load(tmp_path / "none.toml")
+
+
+def test_both_card_slots_are_listed_and_the_right_one_is_active_for_a_download(card, tmp_path, monkeypatch):
+    monkeypatch.setattr(mediamod.MediaManager, "SLOT_SETTLE", 0.0)
+    session = FakeSession()
+    session.slots = ["sd2", "sd1"]
+    manager = card(FakeCard(), session)
+    _wait(lambda: manager.snapshot()["listed"])
+    items = manager.snapshot()["items"]
+    # The same file number on both cards stays two entries.
+    assert [(i["id"], i["slot"]) for i in items] == [("sd2:0110001", "sd2"), ("sd1:0110001", "sd1")]
+    assert session.selected[:2] == ["sd2", "sd1"]
+
+    manager.enqueue(["sd2:0110001"])
+    _wait(lambda: manager.snapshot()["items"][0]["state"] == "done")
+    # The listing ended on sd1, so the download had to switch back first.
+    assert "sd2" in session.selected[2:]
+
+
+def test_settings_of_the_bar_are_validated_set_and_read_back(viewer):
+    controller, camera, _ = viewer
+    sent = []
+    camera.set_setting = lambda name, value: sent.append((name, value))
+    camera.get_setting = lambda name: "-3"
+    controller._setting_values["exposure"] = ["-5", "0", "1/3"]
+    # Measured on the device: asked for -5, the camera adopted -3.
+    assert controller.set_setting("exposure", "-5") == "-3"
+    assert sent == [("exposure", "-5")]
+    assert controller.snapshot_settings()["exposure"]["value"] == "-3"
+    with pytest.raises(LumixError, match="not available"):
+        controller.set_setting("exposure", "9")
+    with pytest.raises(LumixError, match="can't be set"):
+        controller.set_setting("device_name", "x")
+
+
+def test_the_shutter_series_counts_in_the_cameras_thirds():
+    values = appmod.shutter_values()
+    times = appmod.SHUTTER_TIMES
+    assert values[times.index(20)] == "1110/256"    # read on the device at 1/20 s
+    assert values[times.index(60)] == "1536/256"
+    assert values[0] == "3328/256" and values[-1] == "256/256"
+
+
+def test_the_focus_reply_gives_position_and_an_estimated_distance():
+    reply = "ok,346,1024,0,0,1024,32000/214,16000/375,8000/536,4000/697,2000/858,0/0,0/0"
+    focus = appmod.focus_from_reply(reply)
+    assert (focus["position"], focus["max"]) == (346, 1024)
+    assert 16000 < focus["distance_mm"] < 32000
+    assert appmod.focus_from_reply("ok,10,1024")["distance_mm"] is None
+    assert appmod.focus_from_reply("ok") is None
+
+
+def test_focus_and_touch_need_the_live_view(viewer):
+    controller, camera, _ = viewer
+    camera.touch_focus = lambda x, y: camera.calls.append(f"touch {x}/{y}")
+    camera.focus_step = lambda nearer: "ok,349,1024,0,0,1024"
+    controller.touch_focus(500, 500)
+    assert controller.focus_step(True)["position"] == 349
+    controller.media_open()
+    with pytest.raises(LumixError, match="live view"):
+        controller.touch_focus(500, 500)
+    with pytest.raises(LumixError, match="live view"):
+        controller.focus_step(False)
+
+
+def test_the_slots_with_a_card_are_named_active_one_first(viewer):
+    controller, camera, _ = viewer
+    controller._state = CameraState(raw={"current_sd": "sd2", "sd_memory": "set", "sd2_memory": "set"})
+    assert controller.card_slots() == ["sd2", "sd1"]
+    controller._state = CameraState(raw={"current_sd": "sd1", "sd_memory": "set", "sd2_memory": "unset"})
+    assert controller.card_slots() == ["sd1"]
+    controller._state = CameraState(raw={})
+    assert controller.card_slots() == []
