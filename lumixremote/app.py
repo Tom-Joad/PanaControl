@@ -1492,6 +1492,28 @@ async def media_download(request: Request) -> dict:
     return {"ok": True, "queued": await _call(media.enqueue, ids)}
 
 
+@app.post("/api/media/sync", status_code=202, **COMMAND)
+async def media_sync_start(request: Request) -> dict:
+    """For scripts: save everything from the cards that is not in the
+    download folder yet. Opens the cards, downloads, and closes them again;
+    `GET /api/media/sync` tells how far it is."""
+    controller, media = _controller(request), _media(request)
+    return await _call(media.start_sync, controller.media_open, controller.media_close)
+
+
+@app.get("/api/media/sync")
+async def media_sync_state(request: Request) -> dict:
+    return await run_in_threadpool(_media(request).sync_state)
+
+
+@app.post("/api/media/sync/cancel", **COMMAND)
+async def media_sync_cancel(request: Request) -> dict:
+    """End a running run and give the camera back; what was fetched of the
+    current file stays as a part file and is continued next time."""
+    controller, media = _controller(request), _media(request)
+    return await _command(lambda: media.close(controller.media_close))
+
+
 @app.post("/api/media/cancel", **COMMAND)
 async def media_cancel(request: Request) -> dict:
     return await _command(_media(request).cancel)
