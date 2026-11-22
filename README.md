@@ -296,6 +296,25 @@ contain the camera's identifiers and stay out of the repository.
 | `--list-max 200` | entries to list per folder at most |
 | `--download-mb 32` | megabytes to fetch per sample file at most |
 
+### Test of live view, recording and settings
+
+```bash
+python3 -m lumixremote.appprobe --ip 192.0.2.10
+```
+
+The second test run, with somebody standing at the camera. It records the
+camera's events and state through three short recordings (by command,
+stopped on the camera, started on the camera), reads every setting the menu
+definition names, tries touch focus, AF/AE lock, focus pull and zoom by
+command, changes exposure compensation, white balance and shutter speed and
+puts them back, and looks at both card slots. It leaves three short clips
+on the card. Photos are left out: the mode dial can't be turned by command. Stop
+PanaControl first. The replies land in `out/appprobe/`.
+
+When the camera starts recording for the second time, stop it on the
+camera; then start a recording on the camera, which the run stops itself.
+`--wait 90` sets how long it waits for each of the two.
+
 ## Layout
 
 | File | Content |
@@ -306,6 +325,7 @@ contain the camera's identifiers and stay out of the repository.
 | `lumixremote/static/` | Interface without a build step, stylesheets and fonts; `app/` holds the home-screen manifest, icons and the keep-awake video |
 | `lumixremote/probe.py` | Measuring run and results |
 | `lumixremote/mediaprobe.py` | Test of listing, download, events and state |
+| `lumixremote/appprobe.py` | Test of live view, recording, settings and events |
 | `docs/protocol.md` | What was verified on the device |
 | `unraid/README-UNRAID.md` | Running on an Unraid server |
 | `unraid/panacontrol.xml` | Container template for Unraid |

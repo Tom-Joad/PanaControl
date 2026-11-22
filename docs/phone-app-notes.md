@@ -40,10 +40,11 @@ What this could give PanaControl:
 
 It needs a TCP port on the container that the camera can reach.
 
-Measured on 2026-11-22: the DC-GH6 accepts the subscription and sent
-`Sync` = `lens_Atta`; see "Events" in `protocol.md`. Still open: the `VRec`
-values during a real recording, why no `mod_Play` came for the change to
-playback, and whether the subscription survives the dropouts described in
+Measured on 2026-11-22: the DC-GH6 accepts the subscription and reports the
+start and the end of a recording, with `err_UsrStp` for a stop on the
+camera; see "Events" in `protocol.md`. Still open: the other reasons for an
+end (card full, card too slow, temperature), renewing the subscription after
+its 300 seconds, and whether it survives the dropouts described in
 `protocol.md`.
 
 ## More fields in `getstate`
@@ -62,9 +63,9 @@ reply (`x5.C3065i`):
 The DC-GH6 names its fields differently; the measured list is under "The
 state query" in `protocol.md`. Of the app's names only `sdcardstatus` and
 `sd_memory` occur there. The counterparts are probably `progress_time` for
-the elapsed recording time, `current_sd` and `slotfunc` for the recording
-slot, and `temperature` and `warn_disp` for heat warnings; their values
-during a recording and in a warning state are unmeasured.
+the elapsed recording time (measured: it counts the seconds), `current_sd`
+and `slotfunc` for the recording slot, and `temperature` and `warn_disp` for
+heat warnings; their values in a warning state are unmeasured.
 
 ## The live view datagram has a fixed layout
 
@@ -89,7 +90,7 @@ The app computes it (`s5.C2818b`, all numbers big-endian):
 | 32 + n | | JPEG |
 
 So the JPEG starts at `32 + (u16 at offset 30)`. Measured on the DC-GH6 for
-the header length 324, see "Live stream" in `protocol.md`; bytes 9 to 14 are
+the header lengths 324 and 292, see "Live stream" in `protocol.md`; bytes 9 to 14 are
 the camera's MAC address, byte 16 was `0x21`, and the information block had
 type 12. The typed information block carries the exposure readings the app
 shows over the picture. Its fields are not named in the decompiled code;

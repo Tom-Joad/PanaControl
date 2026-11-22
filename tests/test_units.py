@@ -1213,3 +1213,37 @@ def test_datagram_layout_compares_computed_and_found_jpeg_start():
     assert layout["matches"] and layout["info_type"] == 1
     assert not mediaprobe.datagram_layout(b"\x00" * 40 + b"\xff\xd8\xff")["matches"]
     assert not mediaprobe.datagram_layout(b"short")["matches"]
+
+
+# ------------------------------------------------------------ appprobe ---
+
+from lumixremote import appprobe  # noqa: E402
+
+
+def test_the_menu_definition_gives_settings_with_their_values():
+    menu = (
+        '<camrply><menu><item cmd_mode="setsetting" cmd_type="whitebalance" cmd_value="auto"/>'
+        '<item cmd_mode="setsetting" cmd_type="whitebalance" cmd_value="daylight"/>'
+        '<item cmd_mode="setsetting" cmd_type="whitebalance" cmd_value="auto"/>'
+        '<item cmd_mode="camcmd" cmd_type="x" cmd_value="y"/>'
+        '<item cmd_mode="setsetting" cmd_type="peaking"/></menu></camrply>'
+    )
+    assert appprobe.menu_settings(menu) == {"whitebalance": ["auto", "daylight"], "peaking": []}
+    assert appprobe.menu_settings("not xml") == {}
+
+
+def test_replies_are_read_for_the_report():
+    ok = '<camrply><result>ok</result><settingvalue iso="800"/></camrply>'
+    assert appprobe.setting_value(ok, "iso") == "800"
+    assert appprobe.setting_value("<camrply><result>err_critical</result></camrply>", "iso") is None
+    assert appprobe.result_of("<camrply><result>err_busy</result></camrply>") == "err_busy"
+    assert appprobe.result_of("ok,1,2") == "ok,1,2"
+    state = "<camrply><result>ok</result><state><rec>on</rec><cammode>rec</cammode></state></camrply>"
+    assert appprobe.state_fields(state) == {"rec": "on", "cammode": "rec"}
+    assert appprobe.state_fields("garbage") == {}
+
+
+def test_the_focus_position_is_read_from_the_reply():
+    assert appprobe.focus_position("ok,512,1023,0,0") == 512
+    assert appprobe.focus_position("err_param") is None
+    assert appprobe.focus_position("ok") is None

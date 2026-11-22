@@ -160,6 +160,10 @@ GET /cam.cgi?mode=setsetting&type=device_name&value=<name in plain text>
 | `mode=camcmd&value=video_recstart` | Start video recording |
 | `mode=camcmd&value=video_recstop` | Stop video recording |
 | `mode=camcmd&value=capture` | Take a photo |
+| `mode=camcmd&value=playmode` | Switch to playback |
+| `mode=camctrl&type=touch&value=<x>/<y>&value2=on` | Touch focus at a point, see below |
+| `mode=camctrl&type=af_ae_lock&value=on` (or `off`) | AF/AE lock |
+| `mode=camctrl&type=focus&value=tele-normal` (or `wide-normal`) | Move the focus a step, see below |
 | `mode=getstate` | State query, doubles as the keepalive |
 
 Among other things, `getstate` returns the battery level (`batt`), the
@@ -234,6 +238,26 @@ Shutter speed and aperture are APEX values in steps of 1/256:
 Av 1280/256 = 5.0 gives 5.66 and so the marked aperture f/5.6. Cross-checked
 on the device.
 
+Set and read back on the device (2026-11-22), each restored afterwards:
+
+| Setting | Asked | Camera adopted |
+|---|---|---|
+| `whitebalance` | `auto_cool` | `auto_cool` |
+| `shtrspeed` | `1536/256` | `1536/256` |
+| `exposure` | `-5` | `-3` |
+
+So exposure compensation snaps like ISO does. Its values are EV in thirds,
+written as `-5`, `-14/3` ... `1/3` ... `5`; the white balance has 16 values
+(`auto`, `auto_cool`, `auto_warm`, `daylight`, `cloudy`, `shade`, `halogen`,
+`flash`, `white_set1`-`4`, `color_temp1`-`4`). Both lists are in the menu
+definition.
+
+Of the 49 settings the menu definition names, 46 could be read with
+`getsetting`, among them `shtrspeed_angle` (`357`), `photostyle`,
+`videoformat` (`mp4`), `peaking`, `lightmetering`, `afmode` and
+`sensitivity_db`. `focusmode` is readable (`mf`) and follows the lever on the
+camera. Not readable: `videoquality`, `videoquality_filter` and `recmode`.
+
 ### List of values
 
 ```
@@ -300,6 +324,37 @@ same format:
 Because the header has no fixed length, this pattern is searched, not
 computed, as with the JPEG start.
 
+## Focus by command
+
+Measured on 2026-11-22 with the focus lever on `mf` and the live view
+running.
+
+| Call | Reply |
+|---|---|
+| `camcmd&value=oneshot_af` | `ok` |
+| `camctrl&type=touch&value=500/500&value2=on` | `ok` |
+| the same with `250/250`, 1.7 s later | `err_reject` |
+| `camctrl&type=touch&value=0/0&value2=off` | `ok` |
+| `camcmd&value=touch_af_cancel`, `camcmd&value=af_area_reset` | `ok` |
+| `camctrl&type=af_ae_lock&value=on`, then `off` | `ok` |
+| `camctrl&type=focus&value=tele-normal` | `ok,346,1024,0,0,1024,32000/214,...` |
+| `camctrl&type=focus&value=wide-normal` | `ok,349,1024,0,0,1024,32000/214,...` |
+| `camctrl&type=focus&value=focus-stop` | `err_param` |
+
+The touch coordinates run from 0 to 1000 in both directions, taken from the
+phone app; `500/500` is the centre. What the touch did to the focus frame
+and why the second one was rejected was not looked at.
+
+The reply to a focus step carries the lens position: the second field is the
+current value, the third the maximum (1024). The pairs after that look like a
+distance scale (`<distance>/<position>`). **There is no call that only reads
+the position**: `focus-stop`, which the phone app sends, is refused. A step
+is small: two steps moved the value by 3.
+
+The zoom commands (`camcmd` with `tele-normal`, `wide-normal`, `zoomstop`)
+and `lcd_on` were all acknowledged with `ok`, with a lens that has no power
+zoom; `ok` there says nothing about an effect.
+
 ## Live stream
 
 ```
@@ -324,11 +379,14 @@ The header starts with 32 fixed bytes, all numbers big-endian: the length of
 the datagram at offset 0, a running number at offset 4, the camera's MAC
 address at offset 9, and at offset 30 the length of the information block
 that follows. The JPEG then starts at `32 + (u16 at offset 30)`. Measured on
-30 datagrams in a row: the information block was 292 bytes each time, its
-first two bytes were `00 0c`, and the computed start matched the SOI marker
-in all 30. Only the offset 324 occurred in that run, so the formula is not
-yet confirmed for the other two header lengths; the receiver keeps searching
-for the marker.
+samples with the JPEG at 324 and at 292: the computed start matched the SOI
+marker in every one, and the information block began with `00 0c`. The third
+header length, 276, occurred in the same runs but is in none of the kept
+samples, so the receiver keeps searching for the marker.
+
+Which length occurs follows the camera's display state, not the picture:
+right after `startstream` and during a recording it was 324, after a touch
+focus and the settings changes that followed it was 292.
 
 ## Measurements
 
@@ -380,8 +438,21 @@ recording running):
 Values seen: `temperature` `low`, `warn_disp` `no_disp`, `current_sd` `sd1`,
 `slotfunc` `relay2_1`, `sdcardstatus` and `sd2_cardstatus` `write_enable`,
 `sd_full` and `sd2_full` `false`, `progress_time` `0`, `batt` `5/5` with
-`batt_per` `-1`. What `progress_time` counts during a recording and which
-other values `temperature` and `warn_disp` take is unmeasured.
+`batt_per` `-1`. Which other values `temperature` and `warn_disp` take is
+unmeasured.
+
+During a recording (measured over three of them):
+
+* `rec` is `on` from the first poll after `video_recstart`.
+* `progress_time` counts the seconds of the running recording and is `0`
+  again afterwards. It starts about a second late: `0` in the first poll.
+* `video_remaincapacity` counts down by about one per second.
+* `sd2_access` was `on` for the card being written, and `off` again after.
+* After the recording `current_sd` had changed from `sd1` to `sd2`, the slot
+  that was written (`slotfunc` was `relay2_1`).
+
+In playback the reply has two more fields, `play` (`stop`) and
+`add_location_data` (`off`).
 
 ## Events
 
@@ -410,11 +481,27 @@ look like this:
 </e:propertyset>
 ```
 
-Measured: `X_Panasonic_Cam_Sync` = `lens_Atta` arrived right after `recmode`
-was acknowledged. No event came for the camera's own change to playback
-after the registration or for `playmode`. Events for a recording
-(`X_Panasonic_Cam_VRec`, see `phone-app-notes.md`) are unmeasured: no
-recording was made in that run.
+Measured events:
+
+| Event | When |
+|---|---|
+| `X_Panasonic_Cam_VRec` = `start` | a recording starts, by command or on the camera; 0.1 s after `video_recstart` |
+| `X_Panasonic_Cam_VRec` = `done` | a recording was stopped by `video_recstop`; about 1.5 s after the command |
+| `X_Panasonic_Cam_VRec` = `err_UsrStp` | a recording was stopped on the camera |
+| `X_Panasonic_Cam_Sync` = `busy` | a button on the camera was pressed: seen about a second before `err_UsrStp` and before the `start` of a recording started on the camera |
+| `X_Panasonic_Cam_Sync` = `update`, then `lens_Atta` | after a recording ended or started on the camera |
+| `X_Panasonic_Cam_Sync` = `lens_Atta` | right after `recmode` was acknowledged |
+| `X_Panasonic_Cam_Sync` = `lens_Update` | once, a few seconds after a registration |
+| `X_Panasonic_Cam_Sync` = `mod_Play` | the camera's own change to playback after the registration; seen in one of three runs |
+
+So the event tells why a recording ended, which the state query cannot: both
+show `rec` = `off`, but only a stop on the camera sends `err_UsrStp`. The
+event arrived before the next state poll showed the change. The other
+reasons the phone app knows (card full, card too slow, temperature) are
+unmeasured.
+
+No event came for `playmode`, and none for `mod_Play` in two of three
+registrations, so the mode still has to be read from the state query.
 
 ## Listing and downloading the card's contents
 
@@ -442,7 +529,20 @@ SOAPAction: urn:schemas-upnp-org:service:ContentDirectory:1#Browse
 with the request body shown in `media-transfer.md`. It needs no session
 header. The reply names `NumberReturned` and `TotalMatches` and holds an
 escaped DIDL-Lite document. All three clips came as `<item>` directly below
-`0`, without folders. Whether `0` covers both card slots is unmeasured.
+`0`, without folders.
+
+**The listing covers one card slot, the one in `current_sd`.** The other one
+is reached with
+
+```
+GET /cam.cgi?mode=setsetting&type=current_sd&value=sd1    (or sd2)
+```
+
+in playback; `get_content_info` and `Browse` then show that card. Measured:
+`sd1` held three MOV clips (`CAM_AVC_MOV_ORG`), `sd2` three MP4 clips
+(`CAM_AVC_MP4_4K_ORG`). The listing was read two seconds after the change;
+whether it needs that long is unmeasured. A recording sets `current_sd` to
+the slot it wrote.
 
 Per item: `id`, `dc:title` (folder and file number, like `123-0001`),
 `upnp:class` and three `<res>` entries, each with an address on port 50001
