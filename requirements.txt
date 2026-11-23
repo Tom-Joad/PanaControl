@@ -11,7 +11,7 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.16.0
     # via httpcore, starlette
-certifi==2026.10.23
+certifi==2026.11.20
     # via httpcore, httpx
 click==8.5.1
     # via uvicorn
