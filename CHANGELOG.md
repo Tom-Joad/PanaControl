@@ -22,7 +22,6 @@ only comes with a new major version.
   - httpx2 from 2.16.0 to 2.16.2
   - linuxserver/baseimage-alpine from `7315b19` to `9c6e385`
   - fastapi from 0.162.5 to 0.165.0
-- Updated dependencies:
   - pydantic from 2.14.3 to 2.14.4
   - pydantic-core from 2.50.4 to 2.50.5
 
