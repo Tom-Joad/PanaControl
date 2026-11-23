@@ -24,6 +24,7 @@ only comes with a new major version.
   - fastapi from 0.162.5 to 0.165.0
   - pydantic from 2.14.3 to 2.14.4
   - pydantic-core from 2.50.4 to 2.50.5
+  - certifi from 2026.10.23 to 2026.11.20
 
 ## [3.5.0] - 2026-11-22
 
