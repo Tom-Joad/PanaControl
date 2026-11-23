@@ -5,7 +5,7 @@ All notable changes to this project are listed here. Versions follow
 upgrading (a renamed or removed setting, a changed network or volume setup)
 only comes with a new major version.
 
-## [Unreleased]
+## [3.6.0] - 2026-11-23
 
 ### Added
 - **A run started by a script no longer fetches a clip twice.** The app
@@ -17,6 +17,11 @@ only comes with a new major version.
   its entry from the list makes a script run fetch it again.
 
 ### Changed
+- Updated dependencies:
+  - annotated-doc from 0.0.6 to 0.0.7
+  - httpx2 from 2.16.0 to 2.16.2
+  - linuxserver/baseimage-alpine from `7315b19` to `9c6e385`
+  - fastapi from 0.162.5 to 0.165.0
 - Updated dependencies:
   - pydantic from 2.14.3 to 2.14.4
   - pydantic-core from 2.50.4 to 2.50.5
@@ -398,6 +403,7 @@ guide, `docs/unraid.md`).
 Unversioned development: protocol layer, live view, autofocus, recording,
 ISO, the container and the Unraid template.
 
+[3.6.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.4...v3.4.0
 [3.3.4]: https://github.com/Tom-Joad/PanaControl/compare/v3.3.3...v3.3.4
