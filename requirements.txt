@@ -23,7 +23,7 @@ idna==3.20
     # via anyio, httpx
 opentelemetry-api==1.45.2
     # via fastapi
-pydantic==2.14.3
+pydantic==2.14.4
     # via fastapi
 pydantic-core==2.50.4
     # via pydantic
