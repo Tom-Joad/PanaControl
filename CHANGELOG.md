@@ -16,6 +16,11 @@ only comes with a new major version.
   the list too. The interface can still save such a file again; removing
   its entry from the list makes a script run fetch it again.
 
+### Changed
+- Updated dependencies:
+  - pydantic from 2.14.3 to 2.14.4
+  - pydantic-core from 2.50.4 to 2.50.5
+
 ## [3.5.0] - 2026-11-22
 
 ### Added
